@@ -1,0 +1,119 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The CI default is deterministic-only (§2.5). No job here may configure an
+  # LLM: the release gate must work when a customer's model is down.
+  SIGHTGLASS_EGRESS_POLICY: deny
+
+jobs:
+  lint:
+    name: Lint and type-check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv python install 3.12
+      - run: uv sync --extra dev
+      - run: uv run ruff check --output-format=github .
+      - run: uv run ruff format --check .
+      - run: uv run mypy
+
+  test:
+    name: Unit tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv python install 3.12
+      - run: uv sync --extra dev
+      - run: uv run pytest tests/unit -v --cov=core --cov-report=term-missing
+
+  sandbox:
+    name: Sandbox isolation
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv python install 3.12
+      - run: uv sync --extra dev
+
+      - name: Build analyzer images
+        run: docker build -t sightglass/hello:dev sandbox/images/hello
+
+      # These are the tests that decide whether anything else in this repo can
+      # be trusted, so they get their own job and a visible name.
+      - name: Assert the boundary holds
+        run: uv run pytest tests/integration -v -m integration
+
+      - name: M0 acceptance — probe through the real sandbox
+        run: |
+          sudo mkdir -p /var/lib/sightglass/runs
+          sudo chmod 0777 /var/lib/sightglass/runs
+          SIGHTGLASS_RUN_ROOT=/var/lib/sightglass/runs uv run sightglass sandbox health
+          SIGHTGLASS_RUN_ROOT=/var/lib/sightglass/runs uv run sightglass sandbox hello
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # Shipping a credential in the repo of a credential scanner would be a
+      # hard thing to live down.
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  web:
+    name: Web build
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci || npm install
+      - run: npm run typecheck
+      - run: npm run build
+
+  compose:
+    name: Stack boots
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Boot the reference stack and wait for readiness
+        run: |
+          sudo mkdir -p /var/lib/sightglass/runs && sudo chmod 0777 /var/lib/sightglass/runs
+          docker compose up -d --build postgres redis minio minio-init api
+          for _ in $(seq 1 60); do
+            if curl -fsS http://localhost:8000/healthz; then break; fi
+            sleep 5
+          done
+          curl -fsS http://localhost:8000/readyz | tee /dev/stderr | grep -q '"ready": *true'
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose logs --no-color
+      - name: Tear down
+        if: always()
+        run: docker compose down --volumes --remove-orphans

@@ -1,0 +1,20 @@
+# Normalise to LF in the repo. Shell scripts, Dockerfiles, and seccomp profiles
+# are consumed inside Linux containers, where a CRLF shebang or entrypoint fails
+# with an error that names the wrong thing entirely.
+* text=auto eol=lf
+
+*.ps1 text eol=crlf
+
+*.png binary
+*.jpg binary
+*.ico binary
+*.pdf binary
+*.exe binary
+*.dll binary
+*.so binary
+*.bin binary
+*.tar.gz binary
+
+# Generated; keep them out of diffs and out of language stats.
+uv.lock linguist-generated=true
+web/package-lock.json linguist-generated=true

@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# Node / Next.js
+node_modules/
+web/.next/
+web/out/
+web/.turbo/
+*.tsbuildinfo
+
+# Local env & secrets — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.pfx
+*.key
+
+# Build & runtime output
+dist/
+build/
+/var/
+.sightglass/
+airgap-bundle/
+*.tar.gz
+
+# Synthetic test corpus is BUILT, never committed (sources live in tests/corpus/src)
+tests/corpus/build/
+tests/corpus/out/
+
+# Tool droppings
+.DS_Store
+Thumbs.db
+*.log

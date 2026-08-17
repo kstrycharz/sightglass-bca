@@ -1,0 +1,102 @@
+[project]
+name = "sightglass"
+version = "0.0.1"
+description = "Self-hosted, air-gap-capable shipped-artifact exposure scanner."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { text = "Apache-2.0" }
+
+dependencies = [
+    "fastapi==0.115.6",
+    "pydantic==2.10.4",
+    "pydantic-settings==2.7.0",
+    "uvicorn[standard]==0.34.0",
+    "gunicorn==23.0.0",
+    "celery[redis]==5.4.0",
+    "redis==5.2.1",
+    "sqlalchemy==2.0.36",
+    "alembic==1.14.0",
+    "psycopg[binary]==3.2.3",
+    "boto3==1.35.90",
+    "docker==7.1.0",
+    "structlog==24.4.0",
+    "python-multipart==0.0.20",
+    "typer==0.15.1",
+    "pyyaml==6.0.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.4",
+    "pytest-asyncio==0.25.0",
+    "pytest-cov==6.0.0",
+    "mypy==1.14.1",
+    "ruff==0.8.6",
+    "types-pyyaml==6.0.12.20241230",
+    "httpx==0.28.1",
+]
+
+[project.scripts]
+sightglass = "cli.main:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["core", "api", "cli", "reporting", "mcp"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["core", "api", "cli", "reporting", "mcp", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "SIM", "TID", "RUF"]
+ignore = [
+    "A003",
+    # Prose in docstrings and comments uses en dashes and typographic quotes on
+    # purpose. These rules exist to catch homoglyph attacks in identifiers, not
+    # to police English punctuation.
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["core", "api", "cli", "reporting", "mcp", "tests"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["core"]
+plugins = []
+warn_unreachable = true
+disallow_any_generics = true
+no_implicit_reexport = true
+
+[[tool.mypy.overrides]]
+# None of these ship type information. docker-py and celery are load-bearing
+# and unlikely to gain py.typed markers soon; the boundary code that touches
+# them is deliberately thin and annotated by hand.
+module = ["docker.*", "celery.*", "kombu.*", "boto3.*", "botocore.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Celery's task decorator is untyped, which makes every decorated function
+# untyped in strict mode. The alternative is a `type: ignore` on every task.
+module = ["core.orchestrator.*"]
+disallow_untyped_decorators = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+    "integration: requires a live Docker daemon or the compose stack",
+    "sandbox: sandbox isolation tests; requires Docker",
+    "slow: takes more than ~10s",
+]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

@@ -1,0 +1,125 @@
+# Sightglass task runner.
+#
+# Windows users without `make`: run `./make.ps1 <target>`, which forwards to the
+# same commands. Keep the two in sync — every target added here needs an entry
+# there, and `make.ps1 --list` is checked against this file in CI.
+
+SHELL := /bin/bash
+.DEFAULT_GOAL := help
+
+COMPOSE := docker compose
+COMPOSE_DEV := $(COMPOSE) -f docker-compose.yml -f docker-compose.dev.yml
+PY := uv run
+RUN_ROOT ?= /var/lib/sightglass/runs
+
+.PHONY: help
+help: ## Show this help
+	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
+	  | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
+
+# --- environment ------------------------------------------------------------
+
+.PHONY: install
+install: ## Resolve and install Python dependencies into .venv
+	uv sync --extra dev
+
+.PHONY: run-root
+run-root: ## Create the per-run staging directory the worker and daemon share
+	mkdir -p $(RUN_ROOT)
+	chmod 0771 $(RUN_ROOT)
+
+# --- development ------------------------------------------------------------
+
+.PHONY: dev
+dev: run-root ## Boot the full stack with source reload
+	$(COMPOSE_DEV) up --build
+
+.PHONY: dev-detached
+dev-detached: run-root ## Boot the stack in the background
+	$(COMPOSE_DEV) up --build -d
+
+.PHONY: down
+down: ## Stop the stack, keeping volumes
+	$(COMPOSE_DEV) down --remove-orphans
+
+.PHONY: clean
+clean: ## Stop the stack and delete its volumes (destroys uploaded artifacts)
+	$(COMPOSE_DEV) down --remove-orphans --volumes
+
+.PHONY: logs
+logs: ## Follow logs for all services
+	$(COMPOSE_DEV) logs -f
+
+.PHONY: shell
+shell: ## Open a shell in the API container
+	$(COMPOSE_DEV) exec api /bin/bash
+
+# --- analyzer images --------------------------------------------------------
+
+.PHONY: images
+images: image-hello ## Build every analyzer image
+
+.PHONY: image-hello
+image-hello: ## Build the reference analyzer / isolation probe image
+	docker build -t sightglass/hello:dev sandbox/images/hello
+
+.PHONY: refresh-digests
+refresh-digests: ## Print current digests for the pinned base images
+	@for image in python:3.12-slim-bookworm; do \
+	  docker pull -q $$image >/dev/null; \
+	  printf '%-32s %s\n' "$$image" "$$(docker inspect --format '{{index .RepoDigests 0}}' $$image)"; \
+	done
+
+# --- verification -----------------------------------------------------------
+
+.PHONY: test
+test: ## Run the unit suite (no Docker required)
+	$(PY) pytest tests/unit -v
+
+.PHONY: test-integration
+test-integration: images ## Run sandbox isolation tests (requires Docker)
+	$(PY) pytest tests/integration -v -m "integration"
+
+.PHONY: test-all
+test-all: images ## Run every test
+	$(PY) pytest -v
+
+.PHONY: lint
+lint: ## Lint and check formatting
+	$(PY) ruff check .
+	$(PY) ruff format --check .
+
+.PHONY: format
+format: ## Apply formatting and autofixes
+	$(PY) ruff format .
+	$(PY) ruff check --fix .
+
+.PHONY: typecheck
+typecheck: ## Type-check core/ under mypy strict
+	$(PY) mypy
+
+.PHONY: secrets
+secrets: ## Scan this repo for secrets (the irony would be fatal)
+	@command -v gitleaks >/dev/null 2>&1 \
+	  && gitleaks detect --source . --redact --verbose \
+	  || docker run --rm -v "$$PWD:/repo" zricethezav/gitleaks:latest detect --source /repo --redact
+
+.PHONY: check
+check: lint typecheck test ## Everything CI runs on a pull request
+
+.PHONY: sandbox-check
+sandbox-check: image-hello run-root ## M0 acceptance: run the probe through the real sandbox
+	SIGHTGLASS_RUN_ROOT=$(RUN_ROOT) $(PY) sightglass sandbox health
+	SIGHTGLASS_RUN_ROOT=$(RUN_ROOT) $(PY) sightglass sandbox hello
+
+# --- placeholders (raise until implemented; see CLAUDE.md) -------------------
+
+.PHONY: corpus
+corpus: ## Build the synthetic vulnerable-binary corpus (M2)
+	@echo "make corpus is not implemented yet; scheduled for M2 (see CLAUDE.md)" >&2
+	@exit 1
+
+.PHONY: airgap-bundle
+airgap-bundle: ## Produce the offline install tarball (M6)
+	@echo "make airgap-bundle is not implemented yet; scheduled for M6 (see CLAUDE.md)" >&2
+	@exit 1
