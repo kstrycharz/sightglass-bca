@@ -209,6 +209,77 @@ def build_clean_binary(out: Path) -> list[Planted]:
     return []
 
 
+def build_nested_release(out: Path, installer: Path) -> list[Planted]:
+    """A release bundle three levels deep.
+
+    The realistic shape: a zip a vendor publishes, containing the installer and
+    a payload tarball, whose config file holds the staging token nobody
+    remembered to strip. Findings must carry full provenance —
+    ``release.zip → payload.tar.gz → config/prod.json`` — or the engineer
+    cannot tell which build step to fix.
+    """
+    import io
+    import tarfile
+    import zipfile
+
+    planted: list[Planted] = []
+
+    # Level 3: the config file.
+    config = json.dumps(
+        {
+            "environment": "staging",
+            "api_base": "https://api-staging.corp.example.com",
+            "service_token": "ghp_2xQ7mV4kR9wL6nB3tY8cH5jF1dA0zS7eU3iO",
+            "telemetry": {"enabled": True, "key": "AIzaSyB7nK2mQ9xR4vT8wZ1cL5pN3jH6dF0gA2b"},
+            "notes": "TODO: move token to runtime provisioning before GA",
+        },
+        indent=2,
+    ).encode()
+    planted += [
+        Planted(
+            "github-token",
+            "ghp_2xQ7mV4kR9wL6nB3tY8cH5jF1dA0zS7eU3iO",
+            "ascii",
+            "release.zip -> payload.tar.gz -> config/prod.json",
+        ),
+        Planted(
+            "google-api-key",
+            "AIzaSyB7nK2mQ9xR4vT8wZ1cL5pN3jH6dF0gA2b",
+            "ascii",
+            "release.zip -> payload.tar.gz -> config/prod.json",
+        ),
+        Planted(
+            "internal-hostname",
+            "api-staging.corp.example.com",
+            "ascii",
+            "release.zip -> payload.tar.gz -> config/prod.json",
+        ),
+    ]
+
+    # Level 2: a tarball holding that config.
+    tar_buffer = io.BytesIO()
+    with tarfile.open(fileobj=tar_buffer, mode="w:gz") as tar:
+        info = tarfile.TarInfo("config/prod.json")
+        info.size = len(config)
+        tar.addfile(info, io.BytesIO(config))
+
+        readme = b"Internal build payload. Do not redistribute.\n"
+        readme_info = tarfile.TarInfo("README.txt")
+        readme_info.size = len(readme)
+        tar.addfile(readme_info, io.BytesIO(readme))
+
+    # Level 1: the published zip.
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("payload.tar.gz", tar_buffer.getvalue())
+        archive.write(installer, "bin/updater.exe")
+        archive.writestr("VERSION", "4.2.1\n")
+
+    # The installer's own planted secrets are reachable through this bundle too,
+    # which is what proves findings dedupe across the tree rather than
+    # multiplying.
+    return planted
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build the Sightglass synthetic corpus")
     parser.add_argument("--out", type=Path, default=OUT_DIR)
@@ -227,6 +298,15 @@ def main() -> int:
         planted = builder(path)
         expected[name] = [asdict(p) for p in planted]
         print(f"  {name:28} {path.stat().st_size:>8} bytes  {len(planted)} planted")
+
+    # Built last: it wraps the installer produced above.
+    nested = args.out / "nested-release.zip"
+    nested_planted = build_nested_release(nested, args.out / "vulnerable-installer.exe")
+    expected["nested-release.zip"] = [asdict(p) for p in nested_planted]
+    print(
+        f"  {'nested-release.zip':28} {nested.stat().st_size:>8} bytes  "
+        f"{len(nested_planted)} planted (3 levels deep)"
+    )
 
     answer_key = args.out / "expected.json"
     answer_key.write_text(json.dumps(expected, indent=2, sort_keys=True) + "\n", encoding="utf-8")

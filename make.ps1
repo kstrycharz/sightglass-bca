@@ -61,9 +61,10 @@ $Targets = [ordered]@{
     'clean'            = { Invoke-Docker ($ComposeDev + @('down', '--remove-orphans', '--volumes')) }
     'logs'             = { Invoke-Docker ($ComposeDev + @('logs', '-f')) }
 
-    'images'           = { & $PSCommandPath 'image-hello'; & $PSCommandPath 'image-static' }
+    'images'           = { & $PSCommandPath 'image-hello'; & $PSCommandPath 'image-static'; & $PSCommandPath 'image-unpack' }
     'image-hello'      = { Invoke-Docker @('build', '-t', 'sightglass/hello:dev', 'sandbox/images/hello') }
     'image-static'     = { Invoke-Docker @('build', '-f', 'sandbox/images/static/Dockerfile', '-t', 'sightglass/static:dev', '.') }
+    'image-unpack'     = { Invoke-Docker @('build', '-f', 'sandbox/images/unpack/Dockerfile', '-t', 'sightglass/unpack:dev', '.') }
     'refresh-digests'  = {
         foreach ($image in @('python:3.12-slim-bookworm')) {
             Invoke-Docker @('pull', '-q', $image)

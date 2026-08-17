@@ -1,5 +1,5 @@
 import { api, type RulePackInfo } from "@/lib/api";
-import { SeverityBadge } from "@/components/severity";
+import { ErrorNotice, Metric, Mono, Panel, SeverityTag } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
 
@@ -13,79 +13,84 @@ export default async function RulesPage() {
     error = e instanceof Error ? e.message : String(e);
   }
 
-  return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Detection rules</h1>
-        <p className="mt-1 max-w-2xl text-sm text-neutral-600 dark:text-neutral-400">
-          Every finding Sightglass reports comes from one of these. Rules are
-          data, not code — the pack version and hash are recorded in each run
-          manifest, which is what lets two runs claim identical results.
-        </p>
-      </div>
+  const byCategory = new Map<string, RulePackInfo["rules"]>();
+  for (const rule of pack?.rules ?? []) {
+    byCategory.set(rule.category, [...(byCategory.get(rule.category) ?? []), rule]);
+  }
 
-      {error && (
-        <div className="rounded-lg border border-red-500/40 bg-red-500/5 p-4 text-sm">
-          <p className="font-mono text-xs">{error}</p>
-        </div>
-      )}
+  return (
+    <div className="space-y-5">
+      <header>
+        <h1 className="text-xl font-semibold tracking-tight">Detections</h1>
+        <p className="mt-1 max-w-3xl text-sm text-content-muted">
+          Every finding comes from one of these rules. Rules are data, not code
+          — the pack version and hash go into each run manifest, which is what
+          lets two runs claim identical results.
+        </p>
+      </header>
+
+      {error && <ErrorNotice title="Could not load the rule pack" detail={error} />}
 
       {pack && (
         <>
-          <dl className="flex flex-wrap gap-x-8 gap-y-2 text-sm">
-            <div>
-              <dt className="text-xs uppercase tracking-wide text-neutral-500">Version</dt>
-              <dd className="font-mono">{pack.version}</dd>
-            </div>
-            <div>
-              <dt className="text-xs uppercase tracking-wide text-neutral-500">Pack hash</dt>
-              <dd className="font-mono text-xs">{pack.hash.slice(0, 24)}</dd>
-            </div>
-            <div>
-              <dt className="text-xs uppercase tracking-wide text-neutral-500">Rules</dt>
-              <dd className="tabular-nums">{pack.rule_count}</dd>
-            </div>
-            <div>
-              <dt className="text-xs uppercase tracking-wide text-neutral-500">
-                False-positive corpus
-              </dt>
-              <dd className="tabular-nums">{pack.false_positive_corpus_size} entries</dd>
-            </div>
-          </dl>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <Metric label="Rules" value={pack.rule_count} />
+            <Metric label="Categories" value={byCategory.size} />
+            <Metric
+              label="False-positive corpus"
+              value={pack.false_positive_corpus_size}
+              hint="values dropped before they become findings"
+            />
+            <Metric
+              label="Pack version"
+              value={pack.version}
+              hint={pack.hash.slice(0, 12)}
+            />
+          </div>
 
-          <p className="max-w-2xl text-xs text-neutral-600 dark:text-neutral-400">
+          <p className="max-w-3xl text-xs text-content-muted">
             Rules are deliberately over-inclusive: missing a live key is far
             worse than surfacing a dud. The false-positive corpus drops values
             published in vendor documentation and RFCs before they ever become
-            findings, and AI triage handles the rest.
+            findings, and AI triage handles the remainder.
           </p>
 
-          <ul className="space-y-2">
-            {pack.rules.map((rule) => (
-              <li
-                key={rule.id}
-                className="rounded-lg border border-neutral-200 p-3 dark:border-neutral-800"
-              >
-                <div className="flex flex-wrap items-center gap-2">
-                  <SeverityBadge severity={rule.severity} />
-                  <span className="font-medium">{rule.name}</span>
-                  <code className="rounded bg-neutral-100 px-1.5 py-0.5 text-xs dark:bg-neutral-900">
-                    {rule.id}
-                  </code>
-                  <span className="text-xs text-neutral-500">{rule.category}</span>
-                  {rule.cwe && <span className="text-xs text-neutral-500">{rule.cwe}</span>}
-                  {rule.tags.includes("high-noise") && (
-                    <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-xs text-amber-700 dark:text-amber-300">
-                      high noise — relies on triage
-                    </span>
-                  )}
-                </div>
-                <p className="mt-1 text-sm text-neutral-600 dark:text-neutral-400">
-                  {rule.description}
-                </p>
-              </li>
+          {[...byCategory.entries()]
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([category, rules]) => (
+              <Panel key={category} title={category} description={`${rules.length} rules`}>
+                <ul>
+                  {rules.map((rule) => (
+                    <li
+                      key={rule.id}
+                      className="border-b border-border/60 px-4 py-2.5 last:border-0"
+                    >
+                      <div className="flex flex-wrap items-center gap-2">
+                        <SeverityTag severity={rule.severity} size="xs" />
+                        <span className="text-sm font-medium">{rule.name}</span>
+                        <Mono className="rounded bg-surface-sunken px-1.5 py-px text-content-muted">
+                          {rule.id}
+                        </Mono>
+                        {rule.cwe && (
+                          <span className="text-[11px] text-content-subtle">{rule.cwe}</span>
+                        )}
+                        {rule.tags.includes("high-noise") && (
+                          <span className="rounded bg-medium-bg px-1.5 py-px text-[10px] font-medium uppercase tracking-wider text-medium">
+                            high noise
+                          </span>
+                        )}
+                        <span className="ml-auto text-[11px] text-content-subtle tnum">
+                          conf {rule.confidence.toFixed(2)}
+                        </span>
+                      </div>
+                      <p className="mt-1 max-w-4xl text-xs text-content-muted">
+                        {rule.description}
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              </Panel>
             ))}
-          </ul>
         </>
       )}
     </div>

@@ -1,4 +1,5 @@
 import { api, type LlmSettings } from "@/lib/api";
+import { ErrorNotice, Mono, Panel } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
 
@@ -13,159 +14,143 @@ export default async function SettingsPage() {
   }
 
   return (
-    <div className="space-y-8">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
-        <p className="mt-1 max-w-2xl text-sm text-neutral-600 dark:text-neutral-400">
+    <div className="space-y-5">
+      <header>
+        <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
+        <p className="mt-1 max-w-3xl text-sm text-content-muted">
           Sightglass is deterministic first. Everything below is optional — with
           no model configured, scans still run and reports are still complete.
         </p>
-      </div>
+      </header>
 
-      {error && (
-        <div className="rounded-lg border border-red-500/40 bg-red-500/5 p-4 text-sm">
-          <p className="font-medium text-red-700 dark:text-red-400">
-            Could not load LLM settings
-          </p>
-          <p className="mt-1 font-mono text-xs">{error}</p>
-        </div>
-      )}
+      {error && <ErrorNotice title="Could not load LLM settings" detail={error} />}
 
       {settings && (
         <>
-          <section className="space-y-3">
-            <h2 className="text-lg font-semibold">Trust boundary</h2>
-            <dl className="grid gap-4 sm:grid-cols-3">
-              <Card
+          <Panel
+            title="Trust boundary"
+            description="What can leave this network, and what cannot."
+          >
+            <dl className="grid divide-y divide-border sm:grid-cols-3 sm:divide-x sm:divide-y-0">
+              <BoundaryCard
                 label="Egress policy"
                 value={settings.egress}
-                note={
-                  settings.egress === "deny"
-                    ? "No outbound calls except to loopback and private addresses. A model on your own LAN is permitted; the public internet is not."
-                    : "Cloud providers are permitted. Artifact-derived context may leave your network."
-                }
                 tone={settings.egress === "deny" ? "good" : "warn"}
-              />
-              <Card
-                label="Redaction"
-                value={settings.redaction}
-                note="Candidates are sent as shape, entropy, rule name, masked value, and offsets. Secret plaintext is never sent to any provider during triage."
-                tone="good"
-              />
-              <Card
+              >
+                {settings.egress === "deny"
+                  ? "No outbound calls except to loopback and private addresses. A model on your own LAN is permitted; the public internet is not."
+                  : "Cloud providers are permitted. Artifact-derived context may leave your network."}
+              </BoundaryCard>
+              <BoundaryCard label="Redaction" value={settings.redaction} tone="good">
+                Candidates are sent as shape, entropy, rule name, masked value,
+                and offsets. Secret plaintext is never sent to any provider
+                during triage.
+              </BoundaryCard>
+              <BoundaryCard
                 label="LLM layer"
                 value={settings.enabled ? "enabled" : "disabled"}
-                note={
-                  settings.enabled
-                    ? "Triage is available. It never creates findings — only classifies and explains them."
-                    : "Deterministic-only. This is the CI default."
-                }
                 tone="neutral"
-              />
+              >
+                {settings.enabled
+                  ? "Triage is available. It never creates findings — only classifies and explains them."
+                  : "Deterministic-only. This is the CI default."}
+              </BoundaryCard>
             </dl>
             {settings.config_path && (
-              <p className="font-mono text-xs text-neutral-500">{settings.config_path}</p>
+              <p className="border-t border-border px-4 py-2">
+                <Mono className="text-content-subtle">{settings.config_path}</Mono>
+              </p>
             )}
-          </section>
+          </Panel>
 
-          <section className="space-y-3">
-            <h2 className="text-lg font-semibold">Role routing</h2>
-            <p className="max-w-2xl text-sm text-neutral-600 dark:text-neutral-400">
-              Different jobs want different models. Triage runs over every
-              candidate and needs a small, fast, non-reasoning model; explanation
-              runs over a handful of confirmed findings and can afford a large one.
-            </p>
-            <table className="text-sm">
+          <Panel
+            title="Role routing"
+            description="Triage runs over every candidate and needs a small, fast, non-reasoning model. Explanation runs over a handful of confirmed findings and can afford a large one."
+          >
+            <table className="w-full text-sm">
               <tbody>
                 {Object.entries(settings.roles).map(([role, provider]) => (
-                  <tr key={role}>
-                    <td className="py-1 pr-6 font-mono text-xs">{role}</td>
-                    <td className="py-1 font-mono text-xs text-neutral-600 dark:text-neutral-400">
-                      {provider}
-                    </td>
+                  <tr key={role} className="border-b border-border/60 last:border-0">
+                    <td className="px-4 py-1.5 font-mono text-xs text-content-muted">{role}</td>
+                    <td className="px-4 py-1.5 font-mono text-xs">{provider}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
-          </section>
+          </Panel>
 
-          <section className="space-y-3">
-            <h2 className="text-lg font-semibold">Providers</h2>
-            <p className="text-sm text-neutral-600 dark:text-neutral-400">
-              Probed live on page load — a stale green tick is worse than none.
-            </p>
-            <ul className="space-y-2">
+          <Panel
+            title="Providers"
+            description="Probed live on page load — a stale green tick is worse than none."
+          >
+            <ul>
               {settings.providers.map((provider) => (
                 <li
                   key={provider.name}
-                  className="rounded-lg border border-neutral-200 p-3 dark:border-neutral-800"
+                  className="border-b border-border/60 px-4 py-3 last:border-0"
                 >
-                  <div className="flex flex-wrap items-center gap-3">
+                  <div className="flex flex-wrap items-center gap-2.5">
                     <span
-                      className={`inline-block h-2 w-2 rounded-full ${
-                        provider.healthy ? "bg-emerald-500" : "bg-red-500"
+                      className={`h-2 w-2 shrink-0 rounded-full ${
+                        provider.healthy ? "bg-ok" : "bg-critical"
                       }`}
                       aria-hidden
                     />
-                    <span className="font-medium">{provider.name}</span>
-                    <code className="rounded bg-neutral-100 px-1.5 py-0.5 text-xs dark:bg-neutral-900">
+                    <span className="text-sm font-medium">{provider.name}</span>
+                    <Mono className="rounded bg-surface-sunken px-1.5 py-px">
                       {provider.model}
-                    </code>
+                    </Mono>
                     <span
-                      className={`rounded px-1.5 py-0.5 text-xs ${
+                      className={`rounded px-1.5 py-px text-[10px] font-medium uppercase tracking-wider ${
                         provider.is_local
-                          ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
-                          : "bg-amber-500/15 text-amber-700 dark:text-amber-300"
+                          ? "bg-ok-bg text-ok"
+                          : "bg-medium-bg text-medium"
                       }`}
                     >
                       {provider.is_local ? "local" : "remote"}
                     </span>
                     {provider.latency_s !== null && (
-                      <span className="text-xs tabular-nums text-neutral-500">
-                        {(provider.latency_s * 1000).toFixed(0)} ms
+                      <span className="text-xs text-content-subtle tnum">
+                        {(provider.latency_s * 1000).toFixed(0)}ms
                       </span>
                     )}
                   </div>
-                  <p className="mt-1 text-xs text-neutral-600 dark:text-neutral-400">
-                    {provider.detail}
-                  </p>
+                  <p className="mt-1 text-xs text-content-muted">{provider.detail}</p>
                   {provider.available_models.length > 0 && (
-                    <p className="mt-1 font-mono text-xs text-neutral-500">
-                      available: {provider.available_models.join(", ")}
+                    <p className="mt-1 truncate text-[11px] text-content-subtle">
+                      <Mono>{provider.available_models.join("  ·  ")}</Mono>
                     </p>
                   )}
                 </li>
               ))}
             </ul>
-          </section>
+          </Panel>
         </>
       )}
     </div>
   );
 }
 
-function Card({
+function BoundaryCard({
   label,
   value,
-  note,
   tone,
+  children,
 }: {
   label: string;
   value: string;
-  note: string;
   tone: "good" | "warn" | "neutral";
+  children: React.ReactNode;
 }) {
-  const ring =
-    tone === "good"
-      ? "border-emerald-500/40"
-      : tone === "warn"
-        ? "border-amber-500/40"
-        : "border-neutral-200 dark:border-neutral-800";
+  const valueClass =
+    tone === "good" ? "text-ok" : tone === "warn" ? "text-medium" : "text-content";
   return (
-    <div className={`rounded-lg border p-3 ${ring}`}>
-      <dt className="text-xs uppercase tracking-wide text-neutral-500">{label}</dt>
-      <dd className="mt-0.5 font-medium">{value}</dd>
-      <p className="mt-1 text-xs text-neutral-600 dark:text-neutral-400">{note}</p>
+    <div className="px-4 py-3">
+      <dt className="text-[11px] font-medium uppercase tracking-wider text-content-subtle">
+        {label}
+      </dt>
+      <dd className={`mt-0.5 text-sm font-semibold ${valueClass}`}>{value}</dd>
+      <p className="mt-1 text-xs text-content-muted">{children}</p>
     </div>
   );
 }

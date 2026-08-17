@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 import "./globals.css";
+import { SidebarNav } from "@/components/sidebar-nav";
 
 export const metadata: Metadata = {
   title: "Sightglass",
@@ -8,45 +8,25 @@ export const metadata: Metadata = {
     "Shipped-artifact exposure scanner: secrets, sensitive data, and IP disclosure in the binaries you ship.",
 };
 
-const NAV = [
-  { href: "/", label: "Runs" },
-  { href: "/upload", label: "New scan" },
-  { href: "/rules", label: "Rules" },
-  { href: "/settings", label: "Settings" },
-];
-
 export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en">
       <body className="min-h-screen">
-        <header className="border-b border-neutral-200 dark:border-neutral-800">
-          <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-x-6 gap-y-2 px-6 py-3">
-            <Link href="/" className="flex items-baseline gap-2">
-              <span className="text-lg font-semibold tracking-tight">Sightglass</span>
-              <span className="hidden text-xs text-neutral-500 sm:inline">
-                shipped-artifact exposure scanner
-              </span>
-            </Link>
-            <nav className="flex items-center gap-4 text-sm">
-              {NAV.map((item) => (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  className="text-neutral-600 transition-colors hover:text-neutral-950 dark:text-neutral-400 dark:hover:text-neutral-50"
-                >
-                  {item.label}
-                </Link>
-              ))}
-            </nav>
+        {/* Sidebar rather than a top bar: this console is a workbench, not a
+            marketing site. Navigation stays put while a long findings table
+            scrolls, and the viewport keeps its vertical space for data. */}
+        <div className="flex min-h-screen">
+          <SidebarNav />
+          <div className="flex min-w-0 flex-1 flex-col">
+            <main className="min-w-0 flex-1 px-6 py-6 lg:px-8">{children}</main>
+            <footer className="border-t border-border px-6 py-3 text-xs text-content-subtle lg:px-8">
+              Every finding is produced by a deterministic rule. AI assessments
+              are labelled and can be hidden entirely.
+            </footer>
           </div>
-        </header>
-        <main className="mx-auto max-w-7xl px-6 py-8">{children}</main>
-        <footer className="mx-auto max-w-7xl px-6 pb-10 pt-4 text-xs text-neutral-500">
-          Every finding on this dashboard comes from a deterministic rule. AI
-          assessments are labelled and can be hidden entirely.
-        </footer>
+        </div>
       </body>
     </html>
   );

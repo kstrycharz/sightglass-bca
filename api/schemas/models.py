@@ -53,6 +53,8 @@ class RunSummary(BaseModel):
 
     finding_count: int = 0
     severity_counts: dict[str, int] = Field(default_factory=dict)
+    artifact_count: int = 1
+    """Files analysed, including everything unpacked out of the artifact."""
     new_since_previous: int | None = Field(
         default=None,
         description="Findings not present in the previous run of this artifact.",

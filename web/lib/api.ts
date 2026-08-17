@@ -32,6 +32,8 @@ export interface RunSummary {
   artifact_size_bytes: number | null;
   finding_count: number;
   severity_counts: Partial<Record<Severity, number>>;
+  /** Files analysed, including everything unpacked out of the artifact. */
+  artifact_count: number;
   new_since_previous: number | null;
 }
 
@@ -66,6 +68,7 @@ export interface ArtifactNode {
   media_type: string | null;
   architecture: string | null;
   identified: Record<string, unknown>;
+  finding_count: number;
   children: ArtifactNode[];
 }
 

@@ -23,7 +23,7 @@ from api.schemas.models import (
     TriageResponse,
 )
 from core.db import get_session, session_scope
-from core.models import Artifact, Finding, Run, RunStage
+from core.models import Artifact, Finding, FindingLocation, Run, RunStage
 from core.models.enums import RunStatus
 from core.pipeline.ingest import AttestationRequired, ingest_artifact
 
@@ -35,11 +35,11 @@ router = APIRouter(prefix="/api/runs", tags=["runs"])
 @router.post("", response_model=RunCreated, status_code=status.HTTP_201_CREATED)
 async def create_run(
     file: Annotated[UploadFile, File(description="The artifact to analyse.")],
-    attested_by: Annotated[str, Form(description="Who is attesting authorization.")],
+    profile: Annotated[str, Form()] = "standard",
+    attested_by: Annotated[str, Form(description="Who is attesting authorization.")] = "",
     attestation_reference: Annotated[
         str, Form(description="Contract, ticket, or engagement reference.")
-    ],
-    profile: Annotated[str, Form()] = "standard",
+    ] = "",
     llm_enabled: Annotated[bool, Form()] = False,
     retain_plaintext: Annotated[bool, Form()] = False,
 ) -> RunCreated:
@@ -213,6 +213,11 @@ def _summarise(session: Session, run: Run) -> RunSummary:
         # rather than a fuzzy match (§2.5).
         new_since = len(current_ids - previous_ids)
 
+    artifact_count = (
+        session.scalar(select(func.count()).select_from(Artifact).where(Artifact.run_id == run.id))
+        or 1
+    )
+
     return RunSummary(
         id=run.id,
         status=run.status,
@@ -229,6 +234,7 @@ def _summarise(session: Session, run: Run) -> RunSummary:
         artifact_size_bytes=root.size_bytes if root else None,
         finding_count=sum(counts.values()),
         severity_counts=counts,
+        artifact_count=artifact_count,
         new_since_previous=new_since,
     )
 
@@ -238,14 +244,16 @@ def _build_tree(session: Session, run: Run) -> ArtifactOut | None:
     if not artifacts:
         return None
 
-    counts = dict(
+    # Findings per artifact, so a tree node carries a badge and the operator can
+    # see at a glance which nested file is the problem — which is the whole
+    # reason for showing the tree rather than a flat list.
+    finding_counts: dict[str, int] = dict(
         session.execute(
-            select(Finding.rule_id, func.count())
-            .where(Finding.run_id == run.id)
-            .group_by(Finding.rule_id)
+            select(FindingLocation.artifact_id, func.count())
+            .where(FindingLocation.run_id == run.id)
+            .group_by(FindingLocation.artifact_id)
         ).all()
     )
-    del counts  # per-artifact counts arrive with the unpack tree in M2
 
     by_parent: dict[str | None, list[Artifact]] = {}
     for artifact in sorted(artifacts, key=lambda a: (a.depth, a.path_in_tree)):
@@ -253,6 +261,7 @@ def _build_tree(session: Session, run: Run) -> ArtifactOut | None:
 
     def build(artifact: Artifact) -> ArtifactOut:
         node = ArtifactOut.model_validate(artifact)
+        node.finding_count = finding_counts.get(artifact.id, 0)
         node.children = [build(child) for child in by_parent.get(artifact.id, [])]
         return node
 

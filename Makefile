@@ -57,7 +57,7 @@ shell: ## Open a shell in the API container
 # --- analyzer images --------------------------------------------------------
 
 .PHONY: images
-images: image-hello image-static ## Build every analyzer image
+images: image-hello image-static image-unpack ## Build every analyzer image
 
 .PHONY: image-hello
 image-hello: ## Build the reference analyzer / isolation probe image
@@ -66,6 +66,10 @@ image-hello: ## Build the reference analyzer / isolation probe image
 .PHONY: image-static
 image-static: ## Build the static scan analyzer (strings, rules, entropy)
 	docker build -f sandbox/images/static/Dockerfile -t sightglass/static:dev .
+
+.PHONY: image-unpack
+image-unpack: ## Build the recursive unpack analyzer
+	docker build -f sandbox/images/unpack/Dockerfile -t sightglass/unpack:dev .
 
 .PHONY: refresh-digests
 refresh-digests: ## Print current digests for the pinned base images

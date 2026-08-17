@@ -14,6 +14,7 @@ from typing import BinaryIO
 import structlog
 from sqlalchemy.orm import Session
 
+from core.config import get_settings
 from core.models import Artifact, AuditLog, Run
 from core.models.enums import AuditAction, RunStatus
 from core.storage import get_object_store
@@ -54,16 +55,24 @@ def ingest_artifact(
     "yes" is worth nothing to the compliance officer who has to rely on it
     two years from now.
     """
+    settings = get_settings()
     attested_by = (attested_by or "").strip()
     attestation_reference = (attestation_reference or "").strip()
 
-    if not attested_by:
-        raise AttestationRequired("an attesting identity is required")
-    if len(attestation_reference) < 8:
-        raise AttestationRequired(
-            "an authorization reference is required — cite the contract, ticket, "
-            "or engagement that authorises analysing this artifact"
-        )
+    if settings.require_attestation:
+        if not attested_by:
+            raise AttestationRequired("an attesting identity is required")
+        if len(attestation_reference) < 8:
+            raise AttestationRequired(
+                "an authorization reference is required — cite the contract, ticket, "
+                "or engagement that authorises analysing this artifact"
+            )
+    else:
+        # Gate disabled for prototyping. The records are still written, so the
+        # audit trail is continuous and enabling the gate later does not leave
+        # a hole where these runs were.
+        attested_by = attested_by or settings.default_attested_by
+        attestation_reference = attestation_reference or settings.default_attestation_reference
 
     store = get_object_store()
     existing = None

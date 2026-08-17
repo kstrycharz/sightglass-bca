@@ -126,10 +126,17 @@ def _looks_like_text(header: bytes) -> bool:
     return printable / len(header) > 0.95
 
 
-def find_artifact() -> Path | None:
-    """The single file mounted at /input. The orchestrator stages exactly one."""
-    candidates = sorted(p for p in INPUT_DIR.rglob("*") if p.is_file())
-    return candidates[0] if candidates else None
+def find_artifacts() -> list[Path]:
+    """Every file staged under /input.
+
+    The orchestrator stages the root artifact plus the whole extracted tree, so
+    one container pass scans the entire unpack tree. Spawning a container per
+    extracted file would multiply a 400-file installer into 400 container
+    starts, which is minutes of pure overhead for milliseconds of work.
+
+    Sorted so evidence lands in the same order on every run (§2.5).
+    """
+    return sorted(p for p in INPUT_DIR.rglob("*") if p.is_file() and not p.is_symlink())
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -154,9 +161,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     started = time.monotonic()
-    artifact = find_artifact()
-    if artifact is None:
-        print("no artifact found in /input", file=sys.stderr)
+    artifacts = find_artifacts()
+    if not artifacts:
+        print("no artifacts found in /input", file=sys.stderr)
         return 2
 
     try:
@@ -165,45 +172,60 @@ def main(argv: list[str] | None = None) -> int:
         print(f"could not load rule pack from {RULES_DIR}: {exc}", file=sys.stderr)
         return 3
 
-    size = artifact.stat().st_size
-    matches = scan_file(str(artifact), pack, max_bytes=args.max_bytes)
+    scanned: list[dict[str, Any]] = []
+    total_matches = 0
+
+    for artifact in artifacts:
+        relative = artifact.relative_to(INPUT_DIR).as_posix()
+        size = artifact.stat().st_size
+        try:
+            matches = scan_file(str(artifact), pack, max_bytes=args.max_bytes)
+        except OSError as exc:
+            # One unreadable file must not cost the other 399.
+            scanned.append({"relative_path": relative, "error": str(exc), "matches": []})
+            continue
+
+        total_matches += len(matches)
+        scanned.append(
+            {
+                "relative_path": relative,
+                "size_bytes": size,
+                "truncated": size > args.max_bytes,
+                **identify(artifact),
+                # Sorted by the scanner; preserved here so evidence rows land
+                # in the same order on every run regardless of scheduling.
+                "matches": [
+                    {
+                        "rule_id": m.rule_id,
+                        "value_hash": m.value_hash,
+                        "value_masked": m.masked,
+                        **({"value_plaintext": m.value} if args.include_plaintext else {}),
+                        "offset": m.offset,
+                        "encoding": m.encoding,
+                        "entropy": m.entropy,
+                        "context": m.context,
+                    }
+                    for m in matches
+                ],
+            }
+        )
 
     result: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "analyzer": "static",
-        "artifact": {
-            "name": artifact.name,
-            "size_bytes": size,
-            "truncated": size > args.max_bytes,
-            **identify(artifact),
-        },
         "rule_pack": {"version": pack.version, "hash": pack.hash},
         "tool_versions": {
             "python": platform.python_version(),
             "sightglass_scanner": str(SCHEMA_VERSION),
         },
         "duration_s": round(time.monotonic() - started, 3),
-        # Sorted by the scanner; preserved here so evidence rows land in the
-        # same order on every run regardless of scheduling (§2.5).
         "plaintext_included": args.include_plaintext,
-        "matches": [
-            {
-                "rule_id": m.rule_id,
-                "value_hash": m.value_hash,
-                "value_masked": m.masked,
-                **({"value_plaintext": m.value} if args.include_plaintext else {}),
-                "offset": m.offset,
-                "encoding": m.encoding,
-                "entropy": m.entropy,
-                "context": m.context,
-            }
-            for m in matches
-        ],
+        "files": scanned,
     }
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     RESULT_PATH.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(f"scanned {artifact.name} ({size} bytes): {len(matches)} matches", flush=True)
+    print(f"scanned {len(artifacts)} file(s): {total_matches} matches", flush=True)
     return 0
 
 

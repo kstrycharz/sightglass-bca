@@ -3,31 +3,38 @@
 /**
  * Findings explorer.
  *
- * The "deterministic view only" toggle is the important control here (§2.5).
- * When it is on, every AI-derived field disappears — verdicts, reasoning,
- * model attribution — and what remains is exactly what the scanner would have
- * produced with no model configured at all. A user must always be able to
+ * A dense, keyboard-navigable table — AppSec engineers work through these
+ * lists for hours, and a card layout that shows eight findings per screen is a
+ * worse tool than a table that shows forty.
+ *
+ * The "deterministic only" toggle is the control that matters (§2.5). With it
+ * on, every AI-derived field disappears and what remains is exactly what the
+ * scanner produces with no model configured. A user must always be able to
  * answer "would this finding exist without the AI?", and the honest way to
  * answer it is to show them.
  */
 
-import { useMemo, useState } from "react";
-import {
-  SEVERITY_ORDER,
-  formatDuration,
-  type Finding,
-  type Severity,
-  type TriageResponse,
-} from "@/lib/api";
-import { SeverityBadge } from "@/components/severity";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import type { Finding, Severity, TriageResponse } from "@/lib/api";
+import { SEVERITY_ORDER } from "@/lib/api";
+import { Button, Mono, Panel, SeverityTag, duration } from "@/components/ui";
 
-const STATUS_LABELS: Record<string, string> = {
+const STATUS_LABEL: Record<string, string> = {
   open: "Open",
   confirmed: "Confirmed",
   needs_review: "Needs review",
   false_positive: "False positive",
-  accepted_risk: "Accepted risk",
+  accepted_risk: "Accepted",
   fixed: "Fixed",
+};
+
+const STATUS_STYLE: Record<string, string> = {
+  confirmed: "text-critical",
+  needs_review: "text-high",
+  false_positive: "text-content-subtle line-through",
+  accepted_risk: "text-content-subtle",
+  fixed: "text-ok",
+  open: "text-content-muted",
 };
 
 export function FindingsExplorer({
@@ -43,18 +50,29 @@ export function FindingsExplorer({
   const [deterministicOnly, setDeterministicOnly] = useState(false);
   const [severityFilter, setSeverityFilter] = useState<Set<Severity>>(new Set());
   const [newOnly, setNewOnly] = useState(false);
+  const [hideDismissed, setHideDismissed] = useState(false);
+  const [query, setQuery] = useState("");
+  const [cursor, setCursor] = useState(0);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [triaging, setTriaging] = useState(false);
   const [triageResult, setTriageResult] = useState<TriageResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const visible = useMemo(() => {
+    const needle = query.trim().toLowerCase();
     return findings.filter((f) => {
       if (severityFilter.size > 0 && !severityFilter.has(f.severity)) return false;
       if (newOnly && !f.is_new) return false;
+      if (hideDismissed && f.status === "false_positive") return false;
+      if (needle) {
+        const haystack = `${f.title} ${f.rule_id} ${f.category} ${f.value_masked} ${f.locations
+          .map((l) => l.path_in_tree)
+          .join(" ")}`.toLowerCase();
+        if (!haystack.includes(needle)) return false;
+      }
       return true;
     });
-  }, [findings, severityFilter, newOnly]);
+  }, [findings, severityFilter, newOnly, hideDismissed, query]);
 
   const counts = useMemo(() => {
     const result: Partial<Record<Severity, number>> = {};
@@ -62,11 +80,56 @@ export function FindingsExplorer({
     return result;
   }, [findings]);
 
+  const setStatus = useCallback(
+    async (finding: Finding, status: string) => {
+      const response = await fetch(`/api/runs/${runId}/findings/${finding.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+      });
+      if (response.ok) {
+        const updated = (await response.json()) as Finding;
+        setFindings((current) => current.map((f) => (f.id === updated.id ? updated : f)));
+      }
+    },
+    [runId],
+  );
+
+  // Keyboard navigation. AppSec engineers live in j/k/x/e; making them reach
+  // for the mouse on every row is the difference between a tool they use and
+  // one they export to a spreadsheet.
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      const target = event.target as HTMLElement;
+      if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") return;
+
+      const current = visible[cursor];
+      if (event.key === "j" || event.key === "ArrowDown") {
+        event.preventDefault();
+        setCursor((c) => Math.min(c + 1, visible.length - 1));
+      } else if (event.key === "k" || event.key === "ArrowUp") {
+        event.preventDefault();
+        setCursor((c) => Math.max(c - 1, 0));
+      } else if (event.key === "Enter" || event.key === "e") {
+        if (current) setExpanded((x) => (x === current.id ? null : current.id));
+      } else if (event.key === "x" && current) {
+        void setStatus(current, "false_positive");
+      } else if (event.key === "c" && current) {
+        void setStatus(current, "confirmed");
+      } else if (event.key === "d") {
+        setDeterministicOnly((v) => !v);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [visible, cursor, setStatus]);
+
   function toggleSeverity(severity: Severity) {
     const next = new Set(severityFilter);
     if (next.has(severity)) next.delete(severity);
     else next.add(severity);
     setSeverityFilter(next);
+    setCursor(0);
   }
 
   async function runTriage() {
@@ -88,24 +151,44 @@ export function FindingsExplorer({
     }
   }
 
-  async function setStatus(finding: Finding, status: string) {
-    const response = await fetch(`/api/runs/${runId}/findings/${finding.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ status }),
-    });
-    if (response.ok) {
-      const updated = (await response.json()) as Finding;
-      setFindings((current) => current.map((f) => (f.id === updated.id ? updated : f)));
-    }
-  }
-
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-        <h2 className="text-lg font-semibold">Findings</h2>
+    <Panel
+      title={`Findings (${visible.length}${visible.length !== findings.length ? ` of ${findings.length}` : ""})`}
+      actions={
+        <>
+          <label
+            className="flex cursor-pointer items-center gap-1.5 text-xs text-content-muted"
+            title="Hide every AI-derived field. What remains is exactly what the scanner produces with no model configured. (d)"
+          >
+            <input
+              type="checkbox"
+              checked={deterministicOnly}
+              onChange={(e) => setDeterministicOnly(e.target.checked)}
+            />
+            Deterministic only
+          </label>
+          {llmEnabled && !deterministicOnly && (
+            <Button onClick={runTriage} disabled={triaging || findings.length === 0}>
+              {triaging ? "Triaging…" : "Run AI triage"}
+            </Button>
+          )}
+        </>
+      }
+    >
+      {/* Filter bar */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-4 py-2.5">
+        <input
+          type="search"
+          value={query}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setCursor(0);
+          }}
+          placeholder="Filter by rule, value, or path…"
+          className="w-56 rounded-md border border-border bg-surface px-2.5 py-1 text-sm placeholder:text-content-subtle"
+        />
 
-        <div className="flex flex-wrap items-center gap-1.5">
+        <div className="flex flex-wrap items-center gap-1">
           {SEVERITY_ORDER.filter((s) => (counts[s] ?? 0) > 0).map((severity) => {
             const active = severityFilter.has(severity);
             return (
@@ -114,227 +197,285 @@ export function FindingsExplorer({
                 type="button"
                 onClick={() => toggleSeverity(severity)}
                 aria-pressed={active}
-                className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs ring-1 ring-inset transition-opacity ${
+                className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] transition-all ${
                   active
-                    ? "ring-neutral-900 dark:ring-neutral-100"
-                    : "opacity-60 ring-transparent hover:opacity-100"
+                    ? "border-content-muted"
+                    : "border-transparent opacity-55 hover:opacity-100"
                 }`}
               >
-                <SeverityBadge severity={severity} />
-                <span className="tabular-nums">{counts[severity]}</span>
+                <SeverityTag severity={severity} size="xs" />
+                <span className="tnum">{counts[severity]}</span>
               </button>
             );
           })}
         </div>
 
-        <label className="flex items-center gap-1.5 text-sm">
+        <label className="flex items-center gap-1.5 text-xs text-content-muted">
           <input type="checkbox" checked={newOnly} onChange={(e) => setNewOnly(e.target.checked)} />
           New only
         </label>
-
-        <label className="ml-auto flex items-center gap-1.5 text-sm">
+        <label className="flex items-center gap-1.5 text-xs text-content-muted">
           <input
             type="checkbox"
-            checked={deterministicOnly}
-            onChange={(e) => setDeterministicOnly(e.target.checked)}
+            checked={hideDismissed}
+            onChange={(e) => setHideDismissed(e.target.checked)}
           />
-          <span title="Hide every AI-derived field, showing exactly what the scanner produces with no model configured.">
-            Deterministic view only
-          </span>
+          Hide dismissed
         </label>
 
-        {llmEnabled && !deterministicOnly && (
-          <button
-            type="button"
-            onClick={runTriage}
-            disabled={triaging || findings.length === 0}
-            className="rounded-md border border-neutral-300 px-2.5 py-1 text-sm transition-colors hover:bg-neutral-100 disabled:opacity-40 dark:border-neutral-700 dark:hover:bg-neutral-900"
-          >
-            {triaging ? "Triaging…" : "Run AI triage"}
-          </button>
-        )}
+        <span className="ml-auto text-[11px] text-content-subtle">
+          <kbd className="rounded border border-border px-1">j</kbd>
+          <kbd className="ml-0.5 rounded border border-border px-1">k</kbd> move ·{" "}
+          <kbd className="rounded border border-border px-1">e</kbd> expand ·{" "}
+          <kbd className="rounded border border-border px-1">c</kbd> confirm ·{" "}
+          <kbd className="rounded border border-border px-1">x</kbd> dismiss
+        </span>
       </div>
 
       {deterministicOnly && (
-        <p className="rounded-md border border-neutral-300 bg-neutral-50 p-2 text-xs text-neutral-600 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-400">
-          Showing rule output only. Every finding below exists without any model
-          involvement.
+        <p className="border-b border-border bg-surface-sunken px-4 py-1.5 text-xs text-content-muted">
+          Rule output only. Every finding below exists with no model involvement.
         </p>
       )}
 
       {triageResult && !deterministicOnly && (
-        <p className="rounded-md border border-sky-500/40 bg-sky-500/5 p-2 text-xs text-neutral-700 dark:text-neutral-300">
-          Triaged {triageResult.triaged} with{" "}
-          <span className="font-mono">{triageResult.model}</span> in{" "}
-          {formatDuration(triageResult.duration_s)} — {triageResult.confirmed} confirmed,{" "}
+        <p className="border-b border-border bg-surface-sunken px-4 py-1.5 text-xs text-content-muted">
+          <Mono>{triageResult.model}</Mono> triaged {triageResult.triaged} in{" "}
+          {duration(triageResult.duration_s)} — {triageResult.confirmed} confirmed,{" "}
           {triageResult.dismissed} dismissed, {triageResult.needs_review} need review
-          {triageResult.errors > 0 && `, ${triageResult.errors} errored`}.
+          {triageResult.errors > 0 && `, ${triageResult.errors} errored`}. Severities
+          and offsets are unchanged.
         </p>
       )}
 
       {error && (
-        <p className="rounded-md border border-red-500/40 bg-red-500/5 p-2 text-sm text-red-700 dark:text-red-400">
+        <p className="border-b border-border bg-critical-bg px-4 py-2 text-sm text-critical">
           {error}
         </p>
       )}
 
       {visible.length === 0 ? (
-        <p className="rounded-lg border border-dashed border-neutral-300 p-8 text-center text-sm text-neutral-500 dark:border-neutral-700">
+        <p className="px-4 py-10 text-center text-sm text-content-muted">
           {findings.length === 0
-            ? "No findings. Either this artifact is clean, or check the stage list above for a degraded analyzer."
-            : "No findings match the current filters."}
+            ? "No findings. Check the stage list above — a degraded analyzer is not the same as a clean artifact."
+            : "No findings match these filters."}
         </p>
       ) : (
-        <ul className="space-y-2">
-          {visible.map((finding) => {
-            const open = expanded === finding.id;
-            return (
-              <li
-                key={finding.id}
-                className="rounded-lg border border-neutral-200 dark:border-neutral-800"
-              >
-                <button
-                  type="button"
-                  onClick={() => setExpanded(open ? null : finding.id)}
-                  aria-expanded={open}
-                  className="flex w-full flex-wrap items-center gap-x-3 gap-y-1 p-3 text-left hover:bg-neutral-50 dark:hover:bg-neutral-900/50"
-                >
-                  <SeverityBadge severity={finding.severity} />
-                  <span className="font-medium">{finding.title}</span>
-                  <code className="rounded bg-neutral-100 px-1.5 py-0.5 text-xs dark:bg-neutral-900">
-                    {finding.value_masked}
-                  </code>
-                  {finding.is_new && (
-                    <span className="rounded bg-orange-500/15 px-1.5 py-0.5 text-xs text-orange-700 dark:text-orange-300">
-                      new
-                    </span>
-                  )}
-                  <span className="text-xs text-neutral-500">
-                    {finding.location_count} location{finding.location_count === 1 ? "" : "s"}
-                  </span>
-                  {!deterministicOnly && finding.llm && (
-                    <span className="rounded bg-violet-500/15 px-1.5 py-0.5 text-xs text-violet-700 dark:text-violet-300">
-                      AI: {finding.llm.verdict.replace(/_/g, " ")}
-                    </span>
-                  )}
-                  <span className="ml-auto text-xs text-neutral-500">
-                    {STATUS_LABELS[finding.status] ?? finding.status}
-                  </span>
-                </button>
-
-                {open && (
-                  <div className="space-y-4 border-t border-neutral-200 p-4 text-sm dark:border-neutral-800">
-                    <dl className="grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-4">
-                      <Detail label="Rule" value={finding.rule_id} mono />
-                      <Detail label="Category" value={finding.category} />
-                      <Detail
-                        label="Entropy"
-                        value={finding.entropy?.toFixed(2) ?? "—"}
-                      />
-                      <Detail label="CWE" value={finding.cwe ?? "—"} />
-                      <Detail
-                        label="Confidence"
-                        value={finding.confidence.toFixed(2)}
-                      />
-                      <Detail label="Detected by" value={deterministicOnly ? "rule" : finding.detected_by} />
-                      <Detail label="Finding ID" value={finding.id.slice(0, 16)} mono />
-                    </dl>
-
-                    <div>
-                      <h4 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-                        Locations
-                      </h4>
-                      <ul className="mt-1 space-y-0.5 font-mono text-xs">
-                        {finding.locations.map((location, index) => (
-                          <li key={index}>
-                            {location.path_in_tree}
-                            {location.offset !== null && (
-                              <>
-                                {" @ "}
-                                <span className="text-neutral-500">
-                                  0x{location.offset.toString(16)}
-                                </span>
-                              </>
-                            )}
-                            {location.encoding && (
-                              <span className="ml-2 rounded bg-neutral-100 px-1 dark:bg-neutral-900">
-                                {location.encoding}
-                              </span>
-                            )}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-
-                    {finding.context_snippet && (
-                      <div>
-                        <h4 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-                          Context (value masked)
-                        </h4>
-                        <pre className="mt-1 overflow-x-auto rounded bg-neutral-100 p-2 text-xs dark:bg-neutral-900">
-                          {finding.context_snippet}
-                        </pre>
-                      </div>
-                    )}
-
-                    {!deterministicOnly && finding.llm && (
-                      <div className="rounded border border-violet-500/40 bg-violet-500/5 p-3">
-                        <h4 className="text-xs font-semibold uppercase tracking-wide text-violet-700 dark:text-violet-300">
-                          AI assessment — advisory
-                        </h4>
-                        <p className="mt-1">{finding.llm.reasoning}</p>
-                        <p className="mt-2 text-xs text-neutral-500">
-                          Verdict{" "}
-                          <span className="font-medium">
-                            {finding.llm.verdict.replace(/_/g, " ")}
-                          </span>{" "}
-                          from <span className="font-mono">{finding.llm.model}</span>. The
-                          finding, its severity, and its offsets come from the rule and are
-                          unchanged by this assessment.
-                        </p>
-                      </div>
-                    )}
-
-                    {finding.remediation_md && (
-                      <div>
-                        <h4 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-                          Remediation
-                        </h4>
-                        <pre className="mt-1 whitespace-pre-wrap font-sans text-sm">
-                          {finding.remediation_md}
-                        </pre>
-                      </div>
-                    )}
-
-                    <div className="flex flex-wrap gap-2 pt-1">
-                      {["confirmed", "false_positive", "accepted_risk", "fixed"].map((status) => (
-                        <button
-                          key={status}
-                          type="button"
-                          onClick={() => setStatus(finding, status)}
-                          disabled={finding.status === status}
-                          className="rounded border border-neutral-300 px-2 py-1 text-xs transition-colors hover:bg-neutral-100 disabled:opacity-40 dark:border-neutral-700 dark:hover:bg-neutral-900"
+        <div className="scroll-x">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border text-left text-[11px] uppercase tracking-wider text-content-subtle">
+                <th scope="col" className="px-4 py-1.5 font-medium">Severity</th>
+                <th scope="col" className="px-2 py-1.5 font-medium">Finding</th>
+                <th scope="col" className="px-2 py-1.5 font-medium">Value</th>
+                <th scope="col" className="px-2 py-1.5 font-medium">Location</th>
+                <th scope="col" className="px-2 py-1.5 font-medium">Status</th>
+                {!deterministicOnly && (
+                  <th scope="col" className="px-2 py-1.5 font-medium">AI</th>
+                )}
+              </tr>
+            </thead>
+            <tbody>
+              {visible.map((finding, index) => {
+                const open = expanded === finding.id;
+                const primary = finding.locations[0];
+                return (
+                  <>
+                    <tr
+                      key={finding.id}
+                      onClick={() => {
+                        setCursor(index);
+                        setExpanded(open ? null : finding.id);
+                      }}
+                      className={`cursor-pointer border-b border-border/60 ${
+                        index === cursor ? "bg-accent-muted/60" : "hover:bg-surface-sunken/60"
+                      }`}
+                    >
+                      <td className="px-4 py-1.5">
+                        <SeverityTag severity={finding.severity} size="xs" />
+                      </td>
+                      <td className="px-2 py-1.5">
+                        <span className="font-medium">{finding.title}</span>
+                        {finding.is_new && (
+                          <span className="ml-1.5 rounded bg-high-bg px-1 py-px text-[10px] font-medium text-high">
+                            NEW
+                          </span>
+                        )}
+                        {finding.location_count > 1 && (
+                          <span className="ml-1.5 text-[11px] text-content-subtle">
+                            ×{finding.location_count}
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-2 py-1.5">
+                        <Mono className="text-content-muted">{finding.value_masked}</Mono>
+                      </td>
+                      <td className="max-w-[22rem] px-2 py-1.5">
+                        <div
+                          className="truncate font-mono text-xs text-content-subtle"
+                          title={primary?.path_in_tree}
                         >
-                          {STATUS_LABELS[status]}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
+                          {primary?.path_in_tree ?? "—"}
+                          {primary?.offset != null && (
+                            <span className="ml-1">@0x{primary.offset.toString(16)}</span>
+                          )}
+                          {primary?.encoding === "utf-16le" && (
+                            <span className="ml-1 rounded bg-surface-sunken px-1">w</span>
+                          )}
+                        </div>
+                      </td>
+                      <td className={`px-2 py-1.5 text-xs ${STATUS_STYLE[finding.status] ?? ""}`}>
+                        {STATUS_LABEL[finding.status] ?? finding.status}
+                      </td>
+                      {!deterministicOnly && (
+                        <td className="px-2 py-1.5 text-xs">
+                          {finding.llm ? (
+                            <span className="text-accent">
+                              {finding.llm.verdict.replace(/_/g, " ")}
+                            </span>
+                          ) : (
+                            <span className="text-content-subtle">—</span>
+                          )}
+                        </td>
+                      )}
+                    </tr>
+
+                    {open && (
+                      <tr key={`${finding.id}-detail`} className="border-b border-border">
+                        <td colSpan={deterministicOnly ? 5 : 6} className="bg-surface-sunken px-4 py-4">
+                          <FindingDetail
+                            finding={finding}
+                            deterministicOnly={deterministicOnly}
+                            onStatus={(status) => setStatus(finding, status)}
+                          />
+                        </td>
+                      </tr>
+                    )}
+                  </>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function FindingDetail({
+  finding,
+  deterministicOnly,
+  onStatus,
+}: {
+  finding: Finding;
+  deterministicOnly: boolean;
+  onStatus: (status: string) => void;
+}) {
+  return (
+    <div className="grid gap-5 lg:grid-cols-3">
+      <div className="space-y-4 lg:col-span-2">
+        <dl className="grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-4">
+          <Field label="Rule" value={<Mono>{finding.rule_id}</Mono>} />
+          <Field label="Category" value={finding.category} />
+          <Field label="Entropy" value={finding.entropy?.toFixed(2) ?? "—"} />
+          <Field label="CWE" value={finding.cwe ?? "—"} />
+          <Field label="Confidence" value={finding.confidence.toFixed(2)} />
+          <Field
+            label="Detected by"
+            value={deterministicOnly ? "rule" : finding.detected_by}
+          />
+          <Field label="ID" value={<Mono>{finding.id.slice(0, 16)}</Mono>} />
+        </dl>
+
+        <div>
+          <Label>All {finding.locations.length} location(s)</Label>
+          <ul className="mt-1 space-y-0.5">
+            {finding.locations.map((location, index) => (
+              <li key={index} className="font-mono text-xs">
+                <span className="text-content">{location.path_in_tree}</span>
+                {location.offset != null && (
+                  <span className="ml-1.5 text-content-subtle">
+                    0x{location.offset.toString(16)}
+                  </span>
+                )}
+                {location.encoding && (
+                  <span className="ml-1.5 rounded bg-surface px-1 text-[10px] text-content-subtle">
+                    {location.encoding}
+                  </span>
                 )}
               </li>
-            );
-          })}
-        </ul>
-      )}
+            ))}
+          </ul>
+        </div>
+
+        {finding.context_snippet && (
+          <div>
+            <Label>Context — value masked</Label>
+            <pre className="mt-1 scroll-x rounded border border-border bg-surface p-2 font-mono text-xs">
+              {finding.context_snippet}
+            </pre>
+          </div>
+        )}
+
+        {!deterministicOnly && finding.llm && (
+          <div className="rounded border border-accent/30 bg-accent-muted/40 p-3">
+            <Label>AI assessment — advisory</Label>
+            <p className="mt-1 text-sm">{finding.llm.reasoning}</p>
+            <p className="mt-2 text-xs text-content-muted">
+              Verdict <strong>{finding.llm.verdict.replace(/_/g, " ")}</strong> from{" "}
+              <Mono>{finding.llm.model}</Mono>. The finding, its severity, and its
+              offsets come from the rule and are unchanged by this.
+            </p>
+          </div>
+        )}
+      </div>
+
+      <div className="space-y-4">
+        {finding.remediation_md && (
+          <div>
+            <Label>Remediation</Label>
+            <pre className="mt-1 whitespace-pre-wrap font-sans text-sm text-content-muted">
+              {finding.remediation_md}
+            </pre>
+          </div>
+        )}
+
+        <div>
+          <Label>Triage</Label>
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {["confirmed", "false_positive", "accepted_risk", "fixed"].map((status) => (
+              <Button
+                key={status}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onStatus(status);
+                }}
+                disabled={finding.status === status}
+                className="!px-2 !py-1 !text-xs"
+              >
+                {STATUS_LABEL[status]}
+              </Button>
+            ))}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
 
-function Detail({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+function Label({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="text-[11px] font-medium uppercase tracking-wider text-content-subtle">
+      {children}
+    </span>
+  );
+}
+
+function Field({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div>
-      <dt className="text-xs uppercase tracking-wide text-neutral-500">{label}</dt>
-      <dd className={mono ? "font-mono text-xs" : ""}>{value}</dd>
+      <dt className="text-[11px] uppercase tracking-wider text-content-subtle">{label}</dt>
+      <dd className="mt-0.5 text-sm">{value}</dd>
     </div>
   );
 }

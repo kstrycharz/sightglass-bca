@@ -1,11 +1,23 @@
 /**
- * Runs list. Server-rendered, no client JavaScript — §4 requires the dashboard
- * to render usefully with JS disabled, and the list view has no reason to need it.
+ * Runs list — the console's home. Server-rendered with no client JavaScript:
+ * §4 requires the dashboard to render usefully with JS disabled, and a table
+ * has no reason to need it.
  */
 
 import Link from "next/link";
-import { api, formatBytes, formatTime, type RunSummary } from "@/lib/api";
-import { SeverityRollup, StatusText } from "@/components/severity";
+import { api, type RunSummary, type Severity } from "@/lib/api";
+import {
+  Button,
+  EmptyState,
+  ErrorNotice,
+  Metric,
+  Mono,
+  Panel,
+  SeverityBar,
+  StatusDot,
+  bytes,
+  relativeTime,
+} from "@/components/ui";
 
 export const dynamic = "force-dynamic";
 
@@ -19,116 +31,141 @@ export default async function RunsPage() {
     error = e instanceof Error ? e.message : String(e);
   }
 
+  const completed = runs.filter((r) => r.status === "completed");
+  const blocking = completed.reduce(
+    (sum, r) => sum + (r.severity_counts.critical ?? 0) + (r.severity_counts.high ?? 0),
+    0,
+  );
+  const newest = completed[0];
+
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-4">
+      <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Runs</h1>
-          <p className="mt-1 text-sm text-neutral-600 dark:text-neutral-400">
-            Every scan, newest first. Delta shows what is new since the previous
+          <h1 className="text-xl font-semibold tracking-tight">Runs</h1>
+          <p className="mt-1 text-sm text-content-muted">
+            Every scan, newest first. Delta is what changed since the previous
             run of the same artifact.
           </p>
         </div>
-        <Link
-          href="/upload"
-          className="rounded-md bg-neutral-900 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-neutral-700 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-300"
-        >
-          New scan
+        <Link href="/scan">
+          <Button variant="primary">New scan</Button>
         </Link>
-      </div>
+      </header>
 
-      {error && (
-        <div className="rounded-lg border border-red-500/40 bg-red-500/5 p-4">
-          <p className="font-medium text-red-700 dark:text-red-400">API unreachable</p>
-          <p className="mt-1 font-mono text-xs text-neutral-600 dark:text-neutral-400">
-            {error}
-          </p>
+      {error && <ErrorNotice title="API unreachable" detail={error} />}
+
+      {!error && runs.length > 0 && (
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <Metric label="Runs" value={runs.length} />
+          <Metric
+            label="Release-blocking"
+            value={blocking}
+            hint="critical + high, all runs"
+            tone={blocking > 0 ? "bad" : "good"}
+          />
+          <Metric
+            label="Latest findings"
+            value={newest?.finding_count ?? 0}
+            hint={newest?.artifact_name ?? "—"}
+          />
+          <Metric
+            label="New in latest"
+            value={
+              newest?.new_since_previous === null || newest?.new_since_previous === undefined
+                ? "—"
+                : newest.new_since_previous
+            }
+            hint="vs previous run"
+            tone={newest?.new_since_previous ? "warn" : "neutral"}
+          />
         </div>
       )}
 
-      {!error && runs.length === 0 && (
-        <div className="rounded-lg border border-dashed border-neutral-300 p-10 text-center dark:border-neutral-700">
-          <p className="font-medium">No scans yet</p>
-          <p className="mx-auto mt-2 max-w-md text-sm text-neutral-600 dark:text-neutral-400">
-            Upload an installer, executable, or firmware image and Sightglass
-            will report the secrets, internal hostnames, and build metadata
-            baked into it.
-          </p>
-          <Link
-            href="/upload"
-            className="mt-4 inline-block rounded-md bg-neutral-900 px-3 py-2 text-sm font-medium text-white dark:bg-neutral-100 dark:text-neutral-900"
+      <Panel>
+        {!error && runs.length === 0 ? (
+          <EmptyState
+            title="No scans yet"
+            action={
+              <Link href="/scan">
+                <Button variant="primary">Scan an artifact</Button>
+              </Link>
+            }
           >
-            Scan an artifact
-          </Link>
-        </div>
-      )}
-
-      {runs.length > 0 && (
-        <div className="overflow-x-auto">
-          <table className="w-full border-collapse text-sm">
-            <thead>
-              <tr className="border-b border-neutral-200 text-left dark:border-neutral-800">
-                <th scope="col" className="py-2 pr-4 font-medium">Artifact</th>
-                <th scope="col" className="py-2 pr-4 font-medium">Status</th>
-                <th scope="col" className="py-2 pr-4 font-medium">Findings</th>
-                <th scope="col" className="py-2 pr-4 font-medium">Delta</th>
-                <th scope="col" className="py-2 pr-4 font-medium">Attested by</th>
-                <th scope="col" className="py-2 font-medium">Started</th>
-              </tr>
-            </thead>
-            <tbody>
-              {runs.map((run) => (
-                <tr
-                  key={run.id}
-                  className="border-b border-neutral-100 align-top hover:bg-neutral-50 dark:border-neutral-900 dark:hover:bg-neutral-900/50"
-                >
-                  <td className="py-3 pr-4">
-                    <Link href={`/runs/${run.id}`} className="font-medium underline-offset-2 hover:underline">
-                      {run.artifact_name ?? run.id.slice(0, 8)}
-                    </Link>
-                    <div className="mt-0.5 font-mono text-xs text-neutral-500">
-                      {run.artifact_sha256?.slice(0, 16) ?? "—"} ·{" "}
-                      {formatBytes(run.artifact_size_bytes)}
-                    </div>
-                  </td>
-                  <td className="py-3 pr-4">
-                    <StatusText status={run.status} />
-                    {run.error && (
-                      <div className="mt-0.5 max-w-xs truncate font-mono text-xs text-red-600 dark:text-red-400">
-                        {run.error}
-                      </div>
-                    )}
-                  </td>
-                  <td className="py-3 pr-4">
-                    <SeverityRollup counts={run.severity_counts} />
-                  </td>
-                  <td className="py-3 pr-4 tabular-nums">
-                    {run.new_since_previous === null ? (
-                      <span className="text-neutral-400">first run</span>
-                    ) : run.new_since_previous === 0 ? (
-                      <span className="text-emerald-600 dark:text-emerald-400">no new</span>
-                    ) : (
-                      <span className="text-orange-600 dark:text-orange-400">
-                        +{run.new_since_previous} new
-                      </span>
-                    )}
-                  </td>
-                  <td className="py-3 pr-4">
-                    <div>{run.attested_by}</div>
-                    <div
-                      className="max-w-[16rem] truncate text-xs text-neutral-500"
-                      title={run.attestation_reference}
-                    >
-                      {run.attestation_reference}
-                    </div>
-                  </td>
-                  <td className="py-3 text-neutral-500">{formatTime(run.created_at)}</td>
+            Upload an installer, executable, archive, or firmware image.
+            Sightglass unpacks it recursively and reports the secrets, internal
+            hostnames, and build metadata baked into it.
+          </EmptyState>
+        ) : (
+          <div className="scroll-x">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-content-subtle">
+                  <th scope="col" className="px-4 py-2 font-medium">Artifact</th>
+                  <th scope="col" className="px-4 py-2 font-medium">Status</th>
+                  <th scope="col" className="px-4 py-2 font-medium">Findings</th>
+                  <th scope="col" className="px-4 py-2 font-medium">Delta</th>
+                  <th scope="col" className="px-4 py-2 font-medium">Files</th>
+                  <th scope="col" className="px-4 py-2 font-medium">Started</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+              </thead>
+              <tbody>
+                {runs.map((run) => (
+                  <tr
+                    key={run.id}
+                    className="border-b border-border/60 last:border-0 hover:bg-surface-sunken/60"
+                  >
+                    <td className="px-4 py-2.5">
+                      <Link
+                        href={`/runs/${run.id}`}
+                        className="font-medium underline-offset-2 hover:underline"
+                      >
+                        {run.artifact_name ?? run.id.slice(0, 8)}
+                      </Link>
+                      <div className="mt-0.5 flex items-center gap-2 text-xs text-content-subtle">
+                        <Mono title={run.artifact_sha256 ?? undefined}>
+                          {run.artifact_sha256?.slice(0, 12) ?? "—"}
+                        </Mono>
+                        <span>{bytes(run.artifact_size_bytes)}</span>
+                      </div>
+                    </td>
+                    <td className="px-4 py-2.5">
+                      <StatusDot status={run.status} />
+                      {run.error && (
+                        <div className="mt-0.5 max-w-[18rem] truncate font-mono text-xs text-critical">
+                          {run.error}
+                        </div>
+                      )}
+                    </td>
+                    <td className="px-4 py-2.5">
+                      <SeverityBar counts={run.severity_counts} total={run.finding_count} />
+                    </td>
+                    <td className="px-4 py-2.5 tnum">
+                      {run.new_since_previous === null ? (
+                        <span className="text-xs text-content-subtle">baseline</span>
+                      ) : run.new_since_previous === 0 ? (
+                        <span className="text-xs text-ok">no change</span>
+                      ) : (
+                        <span className="text-xs font-medium text-high">
+                          +{run.new_since_previous} new
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-4 py-2.5 tnum text-content-muted">
+                      {run.artifact_count ?? 1}
+                    </td>
+                    <td className="px-4 py-2.5 text-content-muted">
+                      {relativeTime(run.created_at)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
     </div>
   );
 }
+
+export type { Severity };

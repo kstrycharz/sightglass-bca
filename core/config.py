@@ -73,6 +73,18 @@ class Settings(BaseSettings):
     dynamic_analysis_enabled: bool = False
     retain_plaintext_secrets: bool = False
 
+    require_attestation: bool = False
+    """Whether uploads must carry an authorization attestation (§14).
+
+    Off during prototyping so there is no upload friction. The schema, the
+    audit records, and the report stamping all remain — flipping this back to
+    ``true`` restores the gate with nothing to rebuild.
+
+    Turn it on before anyone analyses an artifact they did not build."""
+
+    default_attested_by: str = "prototype"
+    default_attestation_reference: str = "Prototyping phase - attestation gate disabled"
+
     @field_validator("run_root", "repo_root")
     @classmethod
     def _absolute(cls, value: Path) -> Path:
