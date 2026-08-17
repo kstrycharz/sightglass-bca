@@ -30,6 +30,8 @@ COPY cli/ ./cli/
 COPY reporting/ ./reporting/
 COPY mcp/ ./mcp/
 COPY detections/ ./detections/
+COPY config/ ./config/
+COPY scripts/ ./scripts/
 COPY sandbox/ ./sandbox/
 COPY tests/ ./tests/
 

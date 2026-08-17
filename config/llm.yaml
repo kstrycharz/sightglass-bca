@@ -1,0 +1,72 @@
+# BYOLLM configuration. Hot-reloadable; no restart required.
+#
+# The whole pipeline runs with this file absent or `enabled: false`, and
+# produces a complete, valid report. That is the CI default (§2.5). Nothing
+# here is required for Sightglass to work — it makes findings easier to act on,
+# it does not make them exist.
+
+enabled: true
+
+# ---------------------------------------------------------------------------
+# Role routing. This is where the money and the wall-clock time are.
+#
+# Triage runs over every candidate — thousands for a large installer — so it
+# needs a small, fast, NON-REASONING model. Explanation runs over the handful
+# of confirmed findings, where quality matters and volume does not.
+#
+# Measured on a DGX Spark (GB10, 128 GB unified, ~273 GB/s):
+#
+#   qwen2.5-coder:14b-instruct-q4_K_M   ~2.2 s/candidate (warm)
+#   qwen2.5-coder:7b-instruct-q4_K_M    ~2.1 s/candidate (warm)
+#   glm-4.7-flash:bf16                 ~25-48 s/candidate
+#
+# The 14b and 7b are the same wall-clock at these output lengths (~32 tokens),
+# because time is dominated by prefill rather than generation — so the larger
+# model is effectively free and its reasoning is visibly sharper. Use the 14b.
+#
+# glm-4.7-flash is not a bad model; at 55.8 GB in bf16 it is bandwidth-bound to
+# roughly 6 tokens/sec, and it spends most of them on reasoning before it
+# answers. That is fine for 20 explanations and unusable for 5000 triages.
+# ---------------------------------------------------------------------------
+roles:
+  triage: local-fast
+  explain: local-reasoning
+  remediate: local-reasoning
+  summarize: local-reasoning
+
+providers:
+  local-fast:
+    kind: ollama
+    base_url: http://192.168.1.49:11434
+    model: qwen2.5-coder:14b-instruct-q4_K_M
+    num_ctx: 8192
+
+  local-reasoning:
+    kind: ollama
+    base_url: http://192.168.1.49:11434
+    model: glm-4.7-flash:bf16
+    # Reasoning models emit a separate `thinking` stream before answering. Give
+    # them room: a budget sized for the answer alone returns an empty response.
+    num_ctx: 16384
+
+  # Cloud providers land in M3. Left here as documentation of the shape; note
+  # that with `egress: deny` below, enabling one fails at config load rather
+  # than mid-scan.
+  #
+  # frontier:
+  #   kind: anthropic
+  #   model: claude-sonnet-4-5
+  #   api_key_env: ANTHROPIC_API_KEY
+
+policy:
+  # deny = no outbound calls to anything that is not loopback or a private
+  # address. An Ollama box on your own LAN is not egress in any sense a
+  # security team cares about, so 192.168.x.x is permitted under deny.
+  egress: deny
+
+  # strict = candidate secrets are sent as shape, entropy, rule name, masked
+  # value, and offsets. Never the plaintext, for any provider.
+  redaction: strict
+
+  max_context_bytes: 24000
+  cache: true

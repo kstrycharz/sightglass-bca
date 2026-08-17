@@ -1,0 +1,181 @@
+# Internal infrastructure disclosure and IP leakage.
+#
+# The differentiator category. Nobody's source scanner flags these, because in
+# source they are unremarkable — it is their survival into the shipped binary
+# that makes them a disclosure.
+
+rules:
+  - id: pdb-source-path
+    name: PDB path leaking internal directory structure
+    category: ip-exposure
+    severity: medium
+    confidence: 0.9
+    cwe: CWE-200
+    description: >
+      A debug symbol path left in the binary. These routinely expose the build
+      machine's directory tree, the developer's username, internal project
+      codenames, and branch names — a free org chart and roadmap for anyone who
+      runs `strings` on your installer.
+    remediation: |
+      This is a linker setting, not a code change:
+
+      - **MSVC:** build with `/PDBALTPATH:%_PDB%` so only the basename is
+        embedded, and ship release builds without `/DEBUG:FULL`.
+      - **CMake:** ensure `CMAKE_BUILD_TYPE=Release` and that
+        `/DEBUG` is not inherited from a shared flags variable.
+
+      Keep the real PDB in your symbol server for crash analysis; it does not
+      need to be reachable from the shipped binary.
+    patterns:
+      # Spaces are permitted inside the path: "C:\build\Project Hummingbird\..."
+      # is exactly the shape that leaks a codename, and excluding \s to keep the
+      # pattern tight would skip precisely the interesting cases.
+      - regex: '([A-Za-z]:\\[^"<>|*?\r\n]{4,180}\.pdb)'
+        capture: 1
+      - regex: '(\\\\[^"<>|*?\r\n]{4,180}\.pdb)'
+        capture: 1
+    encodings: [ascii, utf-16le]
+    tags: [ip-exposure, build-metadata, windows]
+    tests:
+      positive:
+        - 'C:\build\agent\_work\42\s\Project Hummingbird\Release\updater.pdb'
+      negative:
+        - 'updater.pdb'
+
+  - id: dwarf-source-path
+    name: Source path leaking from DWARF debug info
+    category: ip-exposure
+    severity: low
+    confidence: 0.7
+    cwe: CWE-200
+    description: >
+      A build-time source directory left in an ELF or Go binary. Same exposure
+      as a PDB path: internal tree layout, usernames, and codenames.
+    remediation: |
+      - **GCC/Clang:** `-fdebug-prefix-map=$(pwd)=.` or the newer
+        `-ffile-prefix-map`, and `strip` release binaries.
+      - **Go:** `-trimpath` (and `-ldflags="-s -w"` to drop the symbol table).
+      - **Rust:** `--remap-path-prefix`, and `strip = true` in the release
+        profile.
+    patterns:
+      - regex: '(/(?:home|Users|build|workspace|jenkins|actions-runner)/[^\s:"]{4,180}\.(?:c|cc|cpp|h|hpp|go|rs))'
+        capture: 1
+      - regex: '(/home/[a-z][a-z0-9_.-]{1,32}/[^\s:"]{4,160})'
+        capture: 1
+    tags: [ip-exposure, build-metadata]
+    tests:
+      positive:
+        - "/home/jenkins/workspace/hummingbird-fw/src/provisioning.c"
+      negative:
+        - "/usr/lib/libc.so.6"
+
+  - id: internal-hostname
+    name: Internal hostname
+    category: internal-infrastructure
+    severity: medium
+    confidence: 0.75
+    cwe: CWE-200
+    description: >
+      A hostname on an internal-only namespace. Discloses infrastructure naming
+      and gives an attacker a target list for the day they get inside the
+      perimeter. In firmware it is often worse than disclosure: the device may
+      actually try to reach it.
+    remediation: |
+      Move endpoint configuration out of the binary and into runtime config
+      supplied at install or provisioning time. If the artifact genuinely needs
+      a default, point it at a public, intentional endpoint rather than an
+      internal one.
+    patterns:
+      - regex: '\b([a-z0-9][a-z0-9\-]{0,62}\.(?:internal|corp|intranet|local|lan|home\.arpa)(?:\.[a-z]{2,})?)\b'
+        capture: 1
+      - regex: '\b([a-z0-9][a-z0-9\-]{0,62}\.(?:dev|test|staging|stg|qa|uat)\.[a-z0-9\-]{2,}\.[a-z]{2,})\b'
+        capture: 1
+    tags: [internal-infrastructure, disclosure]
+    tests:
+      positive:
+        - "provisioning-internal.corp.example.com"
+        - "artifactory.internal"
+      negative:
+        - "www.example.com"
+
+  - id: jdbc-connection-string
+    name: Database connection string
+    category: internal-infrastructure
+    severity: high
+    confidence: 0.85
+    cwe: CWE-798
+    description: >
+      A database connection string. Discloses the database host, and where
+      credentials are inline, grants direct access to it.
+    remediation: |
+      Never ship a connection string in a client artifact — a client that talks
+      directly to a database is an architectural problem as much as a secrets
+      problem. Put an authenticated API in front of it. If this is a server-side
+      component, load the string from the environment or a secrets manager and
+      rotate any credentials that were embedded.
+    patterns:
+      - regex: '(jdbc:[a-z0-9]+://[^\s"'']{6,200})'
+        capture: 1
+      - regex: '((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^\s"'':/]+:[^\s"''@]+@[^\s"'']{3,200})'
+        capture: 1
+      - regex: '(Server=[^;\s]{3,100};.*?(?:Password|Pwd)=[^;\s]{1,100})'
+        capture: 1
+    tags: [database, internal-infrastructure]
+    tests:
+      positive:
+        - "postgresql://svc_app:hunter2@db-prod-01.internal:5432/orders"
+      negative:
+        - "postgresql://localhost:5432/orders"
+
+  - id: private-ip-address
+    name: RFC1918 address
+    category: internal-infrastructure
+    severity: low
+    confidence: 0.5
+    cwe: CWE-200
+    description: >
+      A private-range IP address. Often benign (loopback ranges, default
+      gateways, documentation) but sometimes a hardcoded internal service the
+      artifact actually talks to — worth a glance in firmware especially.
+    remediation: |
+      If the address is a real internal endpoint, move it to runtime
+      configuration. If it is a default for a device's own AP or gateway,
+      annotate it and suppress this finding via `.sightglass-ignore.yaml` so it
+      stops appearing every release.
+    patterns:
+      - regex: '\b((?:10\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])|192\.168)\.\d{1,3}\.\d{1,3})\b'
+        capture: 1
+    tags: [internal-infrastructure, high-noise]
+    tests:
+      positive:
+        - "10.20.30.40"
+      negative:
+        - "8.8.8.8"
+
+  - id: ci-build-metadata
+    name: CI environment variable baked into the binary
+    category: ip-exposure
+    severity: medium
+    confidence: 0.7
+    cwe: CWE-200
+    description: >
+      A CI system's internal identifiers left in the artifact — job URLs, runner
+      names, pipeline paths. Discloses build infrastructure, and is a reliable
+      signal that the build embeds its environment, which is how credentials
+      end up embedded too.
+    remediation: |
+      Audit what your build injects into the binary. The usual culprits are a
+      generated version header written from `env`, or a `configure_file` step
+      that templates the whole environment. Inject only the fields you
+      intend — version, commit SHA, build date.
+    patterns:
+      - regex: '\b(JENKINS_URL|BUILD_TAG|GITHUB_ACTIONS|GITLAB_CI|TEAMCITY_VERSION|BUILDKITE_AGENT|CIRCLE_WORKFLOW_ID)\b'
+        capture: 1
+      - regex: '(https?://(?:jenkins|teamcity|bamboo|gitlab|artifactory|nexus)[a-z0-9.\-]*\.[a-z]{2,}(?::\d+)?/[^\s"'']{0,120})'
+        capture: 1
+    tags: [ci-leak, build-metadata]
+    tests:
+      positive:
+        - "https://jenkins.corp.example.com/job/hummingbird/1284/"
+      negative:
+        - "https://github.com/example/project"

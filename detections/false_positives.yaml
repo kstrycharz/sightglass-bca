@@ -1,0 +1,87 @@
+# Known-benign values, dropped before they ever become evidence.
+#
+# This corpus is the difference between a tool people use and a tool people
+# mute. Every entry here is a value that is *published in documentation* and
+# therefore cannot be a real credential — not merely a value that looks
+# suspicious.
+#
+# The bar for adding an entry: it appears verbatim in vendor documentation, an
+# RFC, or a public SDK sample. A customer's own benign value does NOT belong
+# here — that is what `.sightglass-ignore.yaml` suppressions are for, so that
+# one customer's judgement call never suppresses a real finding for another.
+
+known_benign:
+  aws:
+    # From the AWS documentation and the CLI test suite. Recognising these is
+    # table stakes; a scanner whose first finding is the AWS docs example is a
+    # scanner nobody trusts.
+    - AKIAIOSFODNN7EXAMPLE
+    - AKIAI44QH8DHBEXAMPLE
+    - wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+    - je7MtGbClwBF/2Zp9Utk/h3yCo8nvbEXAMPLEKEY
+    - ASIAIOSFODNN7EXAMPLE
+
+  google:
+    - AIzaSyDNM8UgQpAn1nY9Ecu2q2m8vNz0OQR0000
+    # NOTE: "service_account" deliberately does NOT belong here. It was added
+    # once as "a type marker, not a credential" and silently disabled the
+    # gcp-service-account-key rule, because that rule captures the marker as
+    # its value. Entries in this corpus must be *published credential values*,
+    # never structural tokens a rule matches on.
+
+  stripe:
+    - sk_test_4eC39HqLyjWDarjtT1zdp7dc
+    - pk_test_TYooMQauvdEDq54NiTphI7jx
+
+  github:
+    - ghp_000000000000000000000000000000000000
+
+  documentation_hosts:
+    - example.com
+    - www.example.com
+    - example.org
+    - example.net
+    - test.example.com
+    - localhost
+    - localhost.localdomain
+
+  rfc_addresses:
+    # RFC 5737 documentation ranges and the standard loopback/link-local
+    # defaults that appear in almost every embedded artifact.
+    - 192.0.2.1
+    - 198.51.100.1
+    - 203.0.113.1
+    - 127.0.0.1
+    - 0.0.0.0
+    - 255.255.255.255
+    - 192.168.1.1
+    - 192.168.0.1
+    - 10.0.0.1
+    - 172.16.0.1
+
+  placeholders:
+    - changeme
+    - CHANGEME
+    - your-api-key-here
+    - YOUR_API_KEY
+    - xxxxxxxxxxxxxxxx
+    - "null"
+    - "undefined"
+    - REDACTED
+    - INSERT_KEY_HERE
+    - TODO
+    - deadbeefdeadbeefdeadbeefdeadbeef
+    - "00000000000000000000000000000000"
+
+  microsoft_sdk_guids:
+    # Sample GUIDs that ship in the Windows SDK templates and appear in a
+    # startling proportion of Windows installers.
+    - 00000000-0000-0000-0000-000000000000
+    - 11111111-1111-1111-1111-111111111111
+    - 12345678-1234-1234-1234-123456789012
+
+  test_keys:
+    # The NIST AES known-answer test vector, and the openssl test key modulus
+    # prefix. Both appear in shipped crypto libraries as self-test data.
+    - 000102030405060708090a0b0c0d0e0f
+    - 2b7e151628aed2a6abf7158809cf4f3c

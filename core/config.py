@@ -15,7 +15,10 @@ from pathlib import Path
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-SIGHTGLASS_VERSION = "0.0.1"
+from core import __version__
+
+# Single source of truth; core/__init__.py is dependency-free by design.
+SIGHTGLASS_VERSION = __version__
 
 
 class EgressPolicy(StrEnum):

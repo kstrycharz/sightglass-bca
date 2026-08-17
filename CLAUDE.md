@@ -31,7 +31,21 @@ investigates on top of that spine — it never invents a finding.
 
 ## 2. Current status
 
-**Milestone: M0 — Foundation. Complete.**
+**Milestone: M1 — Ingest & static core. Complete. Plus an early slice of M3
+(the Ollama provider and triage), pulled forward so the product is usable.**
+
+Working end to end today: upload an artifact through the dashboard, it is
+scanned in a locked-down container, and deterministic findings appear with
+offsets, encoding, and remediation. Optional AI triage classifies them.
+
+```bash
+make images && make corpus && make dev
+uv run python scripts/demo.py
+```
+
+See [docs/SETUP.md](docs/SETUP.md) for the full walkthrough.
+
+**Previously: M0 — Foundation. Complete.**
 
 What runs today, end to end, from a clean clone:
 
@@ -53,13 +67,13 @@ make install && make sandbox-check     # ./make.ps1 on Windows
 - CI runs lint, mypy strict, unit tests, the isolation suite, a gitleaks scan,
   the web build, and a stack-boots check.
 
-Verified this session: 64 unit tests, 17 integration tests, `mypy --strict`
-clean on `core/`, `ruff check` and `ruff format --check` clean.
+Verified: 102 unit tests, 19 integration tests, `mypy --strict` clean on
+`core/`, `ruff` clean, the frontend builds.
 
-Not yet started: ingestion, analyzers, correlation, rules, LLM layer,
-reporting, MCP servers. The `web` dashboard is a single status page.
+Not yet started: recursive unpacking (M2), Ghidra and dynamic analysis (M5),
+PDF/SARIF/CycloneDX reporting (M4), cloud LLM adapters (M3), MCP servers (M5).
 
-**Next milestone: M1 — Ingest & static core.**
+**Next milestone: M2 — Unpack tree & correlation.**
 
 ---
 
@@ -126,6 +140,7 @@ there. The Makefile stays canonical for CI and Linux.
 **Cost:** two files to keep in sync; every new target needs an entry in both.
 
 ### ADR-0007 — Run root is mounted at the same absolute path on host and worker (2026-08-17)
+*(Superseded by ADR-0009.)*
 `${SIGHTGLASS_RUN_ROOT}:${SIGHTGLASS_RUN_ROOT}` rather than a named volume.
 **Rationale:** the worker spawns analyzer containers as *siblings* through the
 host Docker socket, and the daemon resolves their bind mounts on the host. A
@@ -142,11 +157,96 @@ is programmer error.
 degraded analyzer, not the user's whole scan. The report says which analyzers
 degraded rather than silently reporting "no findings".
 
+### ADR-0009 — The driver translates host paths; it does not require identical mounts (2026-08-17)
+*Supersedes ADR-0007.* The driver holds two views of the run root — `run_root`
+(as the orchestrator sees it) and `host_run_root` (as the daemon sees it) — and
+rewrites bind sources between them.
+**Rationale:** the same-path approach in ADR-0007 is impossible on Windows,
+where a host path is `C:\...` and cannot also be a container path. Docker
+rejects it outright with "too many colons". Translation is more general and
+removes the footgun rather than documenting around it.
+**Rejected:** a named volume, which has no host path the daemon can be given.
+
+### ADR-0010 — Findings use a composite primary key (id, run_id) (2026-08-17)
+`Finding.id` stays content-derived and excludes `run_id`; the table's primary
+key is the pair.
+**Rationale:** content-derived IDs are what make "what is new since the last
+release" a set difference rather than a fuzzy match, so the same secret must
+carry the same id in every release that ships it. That means re-scanning an
+artifact legitimately produces the same id again — a different row, same
+finding. With `id` alone as the primary key the second scan of any artifact
+dies on a unique violation. Finding routes became run-scoped as a consequence,
+which is more correct REST anyway.
+**Rejected:** hashing `run_id` into the id, which would destroy cross-run
+comparability; a surrogate key with a separate `fingerprint` column, which
+leaves the user-visible id meaningless.
+
+### ADR-0011 — The detection engine has no heavy dependencies (2026-08-17)
+`core/rules/` imports only PyYAML and the standard library. `Severity` lives in
+a dependency-free `core/vocab.py`, and `core/__init__.py` is empty of imports.
+**Rationale:** the static analyzer image shares `core.rules` with the host, so
+the scanner that produces findings in production is the exact source the unit
+tests exercise — not a reimplementation that drifts. That only works if the
+import does not drag SQLAlchemy and Pydantic into a sandboxed container.
+**Cost:** one extra module and a re-export; worth it to keep the analyzer image
+at one third-party package.
+
+### ADR-0012 — Triage cannot dismiss a finding at or above high severity (2026-08-17)
+A model verdict of `false_positive` on a `critical` or `high` finding sets
+status to `needs_review`, not `false_positive`.
+**Rationale:** demonstrated in the first live run — the model called a shipped
+private key a false positive, reasoning from a marker in the surrounding text.
+A model is allowed to be wrong; it is not allowed to be wrong in a way that
+hides a shipped private key. Below the floor the model is trusted to reduce
+noise, which is where the value is anyway.
+**Rejected:** trusting verdicts uniformly; requiring human confirmation for
+every verdict, which would defeat the purpose of triage.
 ---
 
 ## 4. Progress log
 
 Reverse-chronological.
+
+### 2026-08-17 — M1 complete, plus the Ollama slice of M3
+**Built:** SQLAlchemy schema (runs, run_manifests, artifacts, evidence,
+findings, finding_locations, audit_log, suppressions, llm_calls); ingest with
+the attestation gate; content-addressed MinIO storage; the detection engine
+(`core/rules/`) with ASCII + UTF-16LE extraction, entropy, masking, and a
+17-rule seed pack with a 44-entry false-positive corpus; the `sightglass/static`
+analyzer image; the correlator (dedupe, scoring, suppressions); the scan
+pipeline and Celery tasks; the full REST API; the Next.js dashboard (runs,
+upload with attestation, run detail with SSE progress, findings explorer with
+the determinism toggle, settings, rules); the Ollama provider with egress
+enforcement and role routing; LLM triage with the severity floor; a synthetic
+corpus builder and `scripts/demo.py`.
+
+**Verified:** 102 unit tests, mypy strict clean, ruff clean, the frontend
+builds. Full end-to-end against a real stack: upload → sandboxed scan → 9
+findings from 10 evidence rows → triage against qwen2.5-coder:14b on a remote
+Ollama host, 9 candidates in 21.4s. Three of the nine findings are UTF-16LE
+only. The false-positive corpus correctly dropped `AKIAIOSFODNN7EXAMPLE` and
+`127.0.0.1` planted in the corpus.
+
+**The severity floor was demonstrated, not just implemented.** The model called
+a shipped private key a false positive; because the rule severity is critical,
+it was demoted to `needs_review` rather than dismissed. The medium-severity PDB
+path, below the floor, was dismissed as the model asked.
+
+**Broke, then fixed:**
+- `Finding.id` is content-derived and deliberately excludes `run_id` so it is
+  comparable across releases — but it was the sole primary key, so re-scanning
+  any artifact died on a unique violation. Now a composite key `(id, run_id)`,
+  and the finding routes are run-scoped, which they should have been anyway.
+- An entry in the false-positive corpus (`service_account`) silently disabled a
+  critical-severity rule, because that rule captures the marker as its value.
+  Caught by the rule self-test. The corpus now documents that entries must be
+  published credential *values*, never structural tokens.
+- `core.rules` transitively imported SQLAlchemy through `core.models`, which
+  would have forced an ORM into the sandboxed analyzer image. Severity moved to
+  a dependency-free `core/vocab.py`; the analyzer image now installs only
+  PyYAML.
+- `config/` was in neither the backend image nor the dev mounts, so triage
+  reported the LLM layer as disabled.
 
 ### 2026-08-17 — M0 complete
 **Built:** repo skeleton (§12 layout); `core/sandbox/` in full — `SandboxSpec`

@@ -1,0 +1,164 @@
+# Private key material and service tokens.
+
+rules:
+  - id: private-key-pem
+    name: Private key in PEM format
+    category: crypto-material
+    severity: critical
+    confidence: 0.98
+    cwe: CWE-321
+    description: >
+      A PEM-encoded private key embedded in the artifact. A private key in a
+      shipped binary is an automatic critical: every copy of the artifact is a
+      copy of the key, and there is no revocation story that does not involve
+      replacing whatever the key authenticates.
+    remediation: |
+      1. Treat the key as compromised. Revoke and reissue the certificate, or
+         rotate the key pair and re-provision every device that trusts it.
+      2. If this is a TLS client key for device identity, move to per-device
+         provisioning at manufacture or first boot. A shared client key across
+         a fleet means one extracted device compromises the fleet.
+      3. If it is a code-signing key, this is an emergency — signing keys must
+         live in an HSM and never be embedded in anything.
+    patterns:
+      - regex: '(-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----)'
+        capture: 1
+      - regex: '(-----BEGIN ENCRYPTED PRIVATE KEY-----)'
+        capture: 1
+    tags: [crypto, key, critical]
+    tests:
+      positive:
+        - "-----BEGIN RSA PRIVATE KEY-----"
+        - "-----BEGIN OPENSSH PRIVATE KEY-----"
+      negative:
+        - "-----BEGIN CERTIFICATE-----"
+        - "-----BEGIN PUBLIC KEY-----"
+
+  - id: pkcs12-keystore
+    name: PKCS#12 keystore reference
+    category: crypto-material
+    severity: high
+    confidence: 0.6
+    cwe: CWE-321
+    description: >
+      A reference to a PKCS#12 or JKS keystore alongside what appears to be its
+      password. Keystores shipped with their password are equivalent to
+      shipping the private key.
+    remediation: |
+      Remove the keystore from the artifact. If the application needs a client
+      certificate, provision it at runtime into the platform key store
+      (Windows CNG, macOS Keychain, Android Keystore) rather than as a file.
+    patterns:
+      - regex: '(?i)(?:keystore|truststore|pkcs12|\.p12|\.pfx|\.jks).{0,40}?(?:pass(?:word|phrase)?)\s*[=:]\s*["'']?([^\s"'';,]{4,})'
+        capture: 1
+    tags: [crypto, keystore]
+    tests:
+      positive:
+        - 'keystore.password=changeit123'
+      negative:
+        - 'keystore.path=/etc/ssl/store.p12'
+
+  - id: github-token
+    name: GitHub token
+    category: service-token
+    severity: critical
+    confidence: 0.95
+    cwe: CWE-798
+    description: >
+      A GitHub personal access, OAuth, app, or refresh token. Depending on
+      scope these grant read or write access to source repositories — which for
+      a shipped artifact means the leak is upstream of the product.
+    remediation: |
+      Revoke the token in GitHub settings immediately, then audit the audit log
+      for its use. In CI, this class of leak almost always comes from an
+      environment variable being baked into the build; check for
+      `configure_file`, `.env` bundling, or a build step that writes secrets to
+      a generated header.
+    patterns:
+      - regex: '\b(gh[pousr]_[A-Za-z0-9]{36,255})\b'
+        capture: 1
+      - regex: '\b(github_pat_[A-Za-z0-9_]{22,255})\b'
+        capture: 1
+    tags: [github, credential, ci-leak]
+    tests:
+      positive:
+        - "ghp_16CharsOfNoiseHere0123456789abcdefgh"
+      negative:
+        - "ghp_short"
+
+  - id: slack-token
+    name: Slack token
+    category: service-token
+    severity: high
+    confidence: 0.95
+    cwe: CWE-798
+    description: A Slack bot, user, app, or workspace token.
+    remediation: |
+      Revoke in the Slack app configuration and reinstall the app to issue a new
+      token. Slack tokens in shipped artifacts usually indicate a debug or
+      crash-reporting integration that should be server-side.
+    patterns:
+      - regex: '\b(xox[abposr]-[A-Za-z0-9-]{10,250})\b'
+        capture: 1
+    tags: [slack, credential]
+    tests:
+      positive:
+        - "xoxb-123456789012-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx"
+      negative:
+        - "xox-nope"
+
+  - id: stripe-secret-key
+    name: Stripe secret key
+    category: service-token
+    severity: critical
+    confidence: 0.98
+    cwe: CWE-798
+    description: >
+      A Stripe secret or restricted API key. Live secret keys can move money;
+      test keys cannot, but their presence still indicates the build pipeline
+      is baking in credentials.
+    remediation: |
+      Roll the key in the Stripe dashboard. Client applications must use the
+      publishable key only — if a secret key reached a shipped artifact, the
+      payment flow needs a server-side component.
+    patterns:
+      - regex: '\b((?:sk|rk)_live_[A-Za-z0-9]{20,247})\b'
+        capture: 1
+      - regex: '\b((?:sk|rk)_test_[A-Za-z0-9]{20,247})\b'
+        capture: 1
+    tags: [stripe, credential, payment]
+    tests:
+      positive:
+        - "sk_live_51H8xKzLmNpQrStUvWxYz0123"
+      negative:
+        - "pk_live_51H8xKzLmNpQrStUvWxYz0123"
+
+  - id: generic-high-entropy-assignment
+    name: High-entropy value assigned to a secret-shaped name
+    category: service-token
+    severity: medium
+    confidence: 0.3
+    cwe: CWE-798
+    min_entropy: 3.6
+    min_length: 16
+    max_length: 200
+    description: >
+      A high-entropy value assigned to a variable whose name suggests a secret.
+      Deliberately broad: this is the rule that catches the credential no
+      vendor-specific pattern knows about. It is also the noisiest rule in the
+      pack, which is precisely what LLM triage is for.
+    remediation: |
+      Determine what this value authenticates. If it is a real credential,
+      rotate it and move it to runtime configuration. If it is a build
+      identifier or a cache key, rename the variable — `*_secret` and `*_token`
+      names in a binary attract exactly this kind of attention.
+    patterns:
+      - regex: '(?i)\b(?:api[_-]?key|secret|token|passwd|password|auth|credential|private[_-]?key)\b\s*[=:]\s*["'']?([A-Za-z0-9_\-/+=.]{16,200})["'']?'
+        capture: 1
+    tags: [generic, high-noise, needs-triage]
+    tests:
+      positive:
+        - 'api_key = "9f8e7d6c5b4a39281706f5e4d3c2b1a0"'
+      negative:
+        - 'password = ""'
+        - 'api_key = "changeme"'

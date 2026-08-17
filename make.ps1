@@ -27,7 +27,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-Location -Path $PSScriptRoot
 
-$RunRoot = if ($env:SIGHTGLASS_RUN_ROOT) { $env:SIGHTGLASS_RUN_ROOT }
+$RunRoot = if ($env:SIGHTGLASS_RUN_ROOT_HOST) { $env:SIGHTGLASS_RUN_ROOT_HOST }
            else { Join-Path $PSScriptRoot 'var\runs' }
 
 $ComposeDev = @('compose', '-f', 'docker-compose.yml', '-f', 'docker-compose.dev.yml')
@@ -44,8 +44,11 @@ function Invoke-Docker { param([string[]]$Arguments) Invoke-Checked 'docker' $Ar
 
 function Initialize-RunRoot {
     if (-not (Test-Path $RunRoot)) { New-Item -ItemType Directory -Force -Path $RunRoot | Out-Null }
+    # _HOST is the path the Docker daemon resolves; the plain variable is the
+    # path inside the worker container. See docs/SETUP.md section 2.
+    $env:SIGHTGLASS_RUN_ROOT_HOST = $RunRoot
     $env:SIGHTGLASS_RUN_ROOT = $RunRoot
-    Write-Host "run root: $RunRoot" -ForegroundColor DarkGray
+    Write-Host "run root (host): $RunRoot" -ForegroundColor DarkGray
 }
 
 $Targets = [ordered]@{
@@ -58,8 +61,9 @@ $Targets = [ordered]@{
     'clean'            = { Invoke-Docker ($ComposeDev + @('down', '--remove-orphans', '--volumes')) }
     'logs'             = { Invoke-Docker ($ComposeDev + @('logs', '-f')) }
 
-    'images'           = { Invoke-Docker @('build', '-t', 'sightglass/hello:dev', 'sandbox/images/hello') }
+    'images'           = { & $PSCommandPath 'image-hello'; & $PSCommandPath 'image-static' }
     'image-hello'      = { Invoke-Docker @('build', '-t', 'sightglass/hello:dev', 'sandbox/images/hello') }
+    'image-static'     = { Invoke-Docker @('build', '-f', 'sandbox/images/static/Dockerfile', '-t', 'sightglass/static:dev', '.') }
     'refresh-digests'  = {
         foreach ($image in @('python:3.12-slim-bookworm')) {
             Invoke-Docker @('pull', '-q', $image)
@@ -87,7 +91,14 @@ $Targets = [ordered]@{
         Invoke-Uv @('sightglass', 'sandbox', 'hello')
     }
 
-    'corpus'           = { throw 'make corpus is not implemented yet; scheduled for M2 (see CLAUDE.md)' }
+    'corpus'           = { Invoke-Uv @('python', 'tests/corpus/build_corpus.py') }
+    'demo'             = {
+        & $PSCommandPath 'images'
+        & $PSCommandPath 'corpus'
+        Initialize-RunRoot
+        Invoke-Docker ($ComposeDev + @('up', '-d', '--build'))
+        Invoke-Uv @('python', 'scripts/demo.py')
+    }
     'airgap-bundle'    = { throw 'make airgap-bundle is not implemented yet; scheduled for M6 (see CLAUDE.md)' }
 }
 

@@ -57,11 +57,15 @@ shell: ## Open a shell in the API container
 # --- analyzer images --------------------------------------------------------
 
 .PHONY: images
-images: image-hello ## Build every analyzer image
+images: image-hello image-static ## Build every analyzer image
 
 .PHONY: image-hello
 image-hello: ## Build the reference analyzer / isolation probe image
 	docker build -t sightglass/hello:dev sandbox/images/hello
+
+.PHONY: image-static
+image-static: ## Build the static scan analyzer (strings, rules, entropy)
+	docker build -f sandbox/images/static/Dockerfile -t sightglass/static:dev .
 
 .PHONY: refresh-digests
 refresh-digests: ## Print current digests for the pinned base images
@@ -115,9 +119,13 @@ sandbox-check: image-hello run-root ## M0 acceptance: run the probe through the 
 # --- placeholders (raise until implemented; see CLAUDE.md) -------------------
 
 .PHONY: corpus
-corpus: ## Build the synthetic vulnerable-binary corpus (M2)
-	@echo "make corpus is not implemented yet; scheduled for M2 (see CLAUDE.md)" >&2
-	@exit 1
+corpus: ## Build the synthetic vulnerable-binary corpus
+	$(PY) python tests/corpus/build_corpus.py
+
+.PHONY: demo
+demo: images corpus run-root ## End-to-end: boot the stack, scan a planted artifact
+	$(COMPOSE_DEV) up -d --build
+	$(PY) python scripts/demo.py
 
 .PHONY: airgap-bundle
 airgap-bundle: ## Produce the offline install tarball (M6)

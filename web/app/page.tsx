@@ -1,129 +1,133 @@
 /**
- * System status.
- *
- * Deliberately a server component with no client JavaScript: §4 requires the
- * dashboard to render usefully with JS disabled, and the place to establish
- * that habit is the first page, not the last. Interactive views (the findings
- * explorer) become client components later; report pages stay server-rendered.
+ * Runs list. Server-rendered, no client JavaScript — §4 requires the dashboard
+ * to render usefully with JS disabled, and the list view has no reason to need it.
  */
 
-const API_URL = process.env.SIGHTGLASS_API_URL ?? "http://localhost:8000";
+import Link from "next/link";
+import { api, formatBytes, formatTime, type RunSummary } from "@/lib/api";
+import { SeverityRollup, StatusText } from "@/components/severity";
 
-type Check = { healthy: boolean; detail: string };
-type Readiness = {
-  ready: boolean;
-  version: string;
-  /** Hard dependencies. These gate readiness. */
-  checks: Record<string, Check>;
-  /** Reported but non-gating — the sandbox belongs to the worker, not the API. */
-  advisory?: Record<string, Check>;
-};
+export const dynamic = "force-dynamic";
 
-async function fetchReadiness(): Promise<Readiness | { error: string }> {
+export default async function RunsPage() {
+  let runs: RunSummary[] = [];
+  let error: string | null = null;
+
   try {
-    const response = await fetch(`${API_URL}/readyz`, {
-      cache: "no-store",
-      signal: AbortSignal.timeout(5000),
-    });
-    return (await response.json()) as Readiness;
-  } catch (error) {
-    return { error: error instanceof Error ? error.message : String(error) };
+    runs = await api.listRuns();
+  } catch (e) {
+    error = e instanceof Error ? e.message : String(e);
   }
-}
-
-export default async function Home() {
-  const readiness = await fetchReadiness();
 
   return (
-    <div className="space-y-8">
-      <section>
-        <h1 className="text-2xl font-semibold tracking-tight">System status</h1>
-        <p className="mt-2 max-w-2xl text-sm text-neutral-600 dark:text-neutral-400">
-          Sightglass is at milestone M0: the sandbox boundary and the deployment
-          stack. Artifact ingestion and the findings explorer arrive in M1.
-        </p>
-      </section>
-
-      {"error" in readiness ? (
-        <div className="rounded-lg border border-severity-critical/40 bg-severity-critical/5 p-4">
-          <p className="font-medium text-severity-critical">API unreachable</p>
-          <p className="mt-1 font-mono text-xs text-neutral-600 dark:text-neutral-400">
-            {readiness.error}
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Runs</h1>
+          <p className="mt-1 text-sm text-neutral-600 dark:text-neutral-400">
+            Every scan, newest first. Delta shows what is new since the previous
+            run of the same artifact.
           </p>
         </div>
-      ) : (
-        <section className="space-y-3">
-          <div className="flex items-center gap-3">
-            <span
-              className={`inline-block h-2.5 w-2.5 rounded-full ${
-                readiness.ready ? "bg-emerald-500" : "bg-severity-high"
-              }`}
-              aria-hidden
-            />
-            <span className="font-medium">
-              {readiness.ready ? "Ready" : "Not ready"}
-            </span>
-            <span className="text-sm text-neutral-500">v{readiness.version}</span>
-          </div>
+        <Link
+          href="/upload"
+          className="rounded-md bg-neutral-900 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-neutral-700 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-300"
+        >
+          New scan
+        </Link>
+      </div>
 
+      {error && (
+        <div className="rounded-lg border border-red-500/40 bg-red-500/5 p-4">
+          <p className="font-medium text-red-700 dark:text-red-400">API unreachable</p>
+          <p className="mt-1 font-mono text-xs text-neutral-600 dark:text-neutral-400">
+            {error}
+          </p>
+        </div>
+      )}
+
+      {!error && runs.length === 0 && (
+        <div className="rounded-lg border border-dashed border-neutral-300 p-10 text-center dark:border-neutral-700">
+          <p className="font-medium">No scans yet</p>
+          <p className="mx-auto mt-2 max-w-md text-sm text-neutral-600 dark:text-neutral-400">
+            Upload an installer, executable, or firmware image and Sightglass
+            will report the secrets, internal hostnames, and build metadata
+            baked into it.
+          </p>
+          <Link
+            href="/upload"
+            className="mt-4 inline-block rounded-md bg-neutral-900 px-3 py-2 text-sm font-medium text-white dark:bg-neutral-100 dark:text-neutral-900"
+          >
+            Scan an artifact
+          </Link>
+        </div>
+      )}
+
+      {runs.length > 0 && (
+        <div className="overflow-x-auto">
           <table className="w-full border-collapse text-sm">
-            <caption className="sr-only">Dependency health checks</caption>
             <thead>
               <tr className="border-b border-neutral-200 text-left dark:border-neutral-800">
-                <th scope="col" className="py-2 pr-4 font-medium">
-                  Dependency
-                </th>
-                <th scope="col" className="py-2 pr-4 font-medium">
-                  Status
-                </th>
-                <th scope="col" className="py-2 font-medium">
-                  Detail
-                </th>
+                <th scope="col" className="py-2 pr-4 font-medium">Artifact</th>
+                <th scope="col" className="py-2 pr-4 font-medium">Status</th>
+                <th scope="col" className="py-2 pr-4 font-medium">Findings</th>
+                <th scope="col" className="py-2 pr-4 font-medium">Delta</th>
+                <th scope="col" className="py-2 pr-4 font-medium">Attested by</th>
+                <th scope="col" className="py-2 font-medium">Started</th>
               </tr>
             </thead>
             <tbody>
-              {Object.entries(readiness.checks).map(([name, check]) => (
+              {runs.map((run) => (
                 <tr
-                  key={name}
-                  className="border-b border-neutral-100 dark:border-neutral-900"
+                  key={run.id}
+                  className="border-b border-neutral-100 align-top hover:bg-neutral-50 dark:border-neutral-900 dark:hover:bg-neutral-900/50"
                 >
-                  <td className="py-2 pr-4 font-mono text-xs">{name}</td>
-                  <td className="py-2 pr-4">
-                    <span
-                      className={
-                        check.healthy
-                          ? "text-emerald-600 dark:text-emerald-400"
-                          : "text-severity-critical"
-                      }
+                  <td className="py-3 pr-4">
+                    <Link href={`/runs/${run.id}`} className="font-medium underline-offset-2 hover:underline">
+                      {run.artifact_name ?? run.id.slice(0, 8)}
+                    </Link>
+                    <div className="mt-0.5 font-mono text-xs text-neutral-500">
+                      {run.artifact_sha256?.slice(0, 16) ?? "—"} ·{" "}
+                      {formatBytes(run.artifact_size_bytes)}
+                    </div>
+                  </td>
+                  <td className="py-3 pr-4">
+                    <StatusText status={run.status} />
+                    {run.error && (
+                      <div className="mt-0.5 max-w-xs truncate font-mono text-xs text-red-600 dark:text-red-400">
+                        {run.error}
+                      </div>
+                    )}
+                  </td>
+                  <td className="py-3 pr-4">
+                    <SeverityRollup counts={run.severity_counts} />
+                  </td>
+                  <td className="py-3 pr-4 tabular-nums">
+                    {run.new_since_previous === null ? (
+                      <span className="text-neutral-400">first run</span>
+                    ) : run.new_since_previous === 0 ? (
+                      <span className="text-emerald-600 dark:text-emerald-400">no new</span>
+                    ) : (
+                      <span className="text-orange-600 dark:text-orange-400">
+                        +{run.new_since_previous} new
+                      </span>
+                    )}
+                  </td>
+                  <td className="py-3 pr-4">
+                    <div>{run.attested_by}</div>
+                    <div
+                      className="max-w-[16rem] truncate text-xs text-neutral-500"
+                      title={run.attestation_reference}
                     >
-                      {check.healthy ? "healthy" : "unhealthy"}
-                    </span>
+                      {run.attestation_reference}
+                    </div>
                   </td>
-                  <td className="py-2 font-mono text-xs text-neutral-500">
-                    {check.detail || "—"}
-                  </td>
+                  <td className="py-3 text-neutral-500">{formatTime(run.created_at)}</td>
                 </tr>
               ))}
             </tbody>
           </table>
-
-          {readiness.advisory && (
-            <div className="pt-2">
-              <h2 className="text-sm font-medium">Advisory</h2>
-              <p className="mt-1 text-xs text-neutral-500">
-                Reported but not gating readiness. The API has no Docker socket
-                by design — analyzer containers are spawned by the worker.
-              </p>
-              <ul className="mt-2 space-y-1">
-                {Object.entries(readiness.advisory).map(([name, check]) => (
-                  <li key={name} className="font-mono text-xs text-neutral-500">
-                    {name}: {check.healthy ? "healthy" : "unavailable"}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </section>
+        </div>
       )}
     </div>
   );
