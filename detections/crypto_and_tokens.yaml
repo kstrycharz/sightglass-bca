@@ -1,4 +1,4 @@
-# Private key material and service tokens.
+﻿# Private key material and service tokens.
 
 rules:
   - id: private-key-pem
@@ -20,6 +20,10 @@ rules:
          a fleet means one extracted device compromises the fleet.
       3. If it is a code-signing key, this is an emergency — signing keys must
          live in an HSM and never be embedded in anything.
+    # This rule matches a structural marker on purpose, so the shape filter
+    # (which exists to reject things *inside* encoded structure) must not
+    # apply — it would reject the one match that matters most.
+    shape_policy: "off"
     patterns:
       - regex: '(-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----)'
         capture: 1
@@ -142,6 +146,13 @@ rules:
     min_entropy: 3.6
     min_length: 16
     max_length: 200
+    # Deliberately `context`, not `strict`. This rule is anchored on a keyword
+    # — `api_key=`, `secret:`, `token =` — and that anchor is its specificity.
+    # Strict value-shape filtering would reject a 32-character hex API key as
+    # an MD5 digest, but nobody assigns a checksum to a variable named
+    # `api_key`; the entropy floor plus the keyword already carry this rule.
+    # Context rejection still protects it from certificate and PDF blobs.
+    shape_policy: context
     description: >
       A high-entropy value assigned to a variable whose name suggests a secret.
       Deliberately broad: this is the rule that catches the credential no

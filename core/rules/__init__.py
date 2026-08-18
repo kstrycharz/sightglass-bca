@@ -12,6 +12,7 @@ from core.rules.scanner import (
     scan_bytes,
     scan_file,
 )
+from core.rules.shape import Shape, ShapePolicy, ShapeVerdict, classify, has_nearby
 
 __all__ = [
     "ExtractedString",
@@ -20,9 +21,14 @@ __all__ = [
     "Rule",
     "RuleLoadError",
     "RulePack",
+    "Shape",
+    "ShapePolicy",
+    "ShapeVerdict",
+    "classify",
     "extract_ascii",
     "extract_strings",
     "extract_utf16le",
+    "has_nearby",
     "load_rule_pack",
     "mask",
     "scan_bytes",

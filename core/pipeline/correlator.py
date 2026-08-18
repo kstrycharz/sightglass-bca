@@ -15,6 +15,7 @@ so the output is byte-identical across runs regardless of scheduling (§2.5).
 
 from __future__ import annotations
 
+import hashlib
 from collections import defaultdict
 from dataclasses import dataclass, field
 
@@ -131,8 +132,111 @@ def correlate(
                 )
             )
 
+    _cluster_repetitive_rules(result, rules_by_id, run_id)
     result.findings.sort(key=lambda f: (_severity_rank(f.severity), f.rule_id, f.id))
     return result
+
+
+# A rule firing more than this many times in one run is describing a systemic
+# property of the build, not N separate problems. Measured on a real release:
+# 867 distinct DWARF build paths in one statically-linked binary. All true, all
+# the same finding — "this binary ships its build paths" — and presenting them
+# as 867 rows buries the four credentials that actually matter.
+CLUSTER_THRESHOLD = 20
+
+
+def _cluster_repetitive_rules(
+    result: CorrelationResult,
+    rules_by_id: dict[str, Rule],
+    run_id: str,
+) -> None:
+    """Collapse a rule's findings into one when it fires en masse.
+
+    Nothing is discarded: every location survives on the clustered finding, so
+    the evidence is intact and the report can still enumerate it. What changes
+    is the unit of attention, which is the scarce resource in a security review.
+    """
+    by_rule: dict[str, list[Finding]] = defaultdict(list)
+    for finding in result.findings:
+        by_rule[finding.rule_id].append(finding)
+
+    locations_by_finding: dict[str, list[FindingLocation]] = defaultdict(list)
+    for location in result.locations:
+        locations_by_finding[location.finding_id].append(location)
+
+    kept: list[Finding] = []
+    kept_locations: list[FindingLocation] = []
+
+    for rule_id, findings in sorted(by_rule.items()):
+        if len(findings) <= CLUSTER_THRESHOLD:
+            kept.extend(findings)
+            for finding in findings:
+                kept_locations.extend(locations_by_finding[finding.id])
+            continue
+
+        rule = rules_by_id[rule_id]
+        ordered = sorted(findings, key=lambda f: f.id)
+        anchor = ordered[0]
+        cluster_hash = hashlib.sha256(
+            ("cluster:" + rule_id + ":" + ",".join(f.value_hash for f in ordered)).encode()
+        ).hexdigest()
+
+        anchor_location = (
+            locations_by_finding[anchor.id][0] if locations_by_finding[anchor.id] else None
+        )
+        anchor_path = anchor_location.path_in_tree if anchor_location else ""
+        cluster_id = Finding.compute_id(rule_id, cluster_hash, anchor_path, None)
+
+        samples = ", ".join(f.value_masked for f in ordered[:3])
+        cluster = Finding(
+            id=cluster_id,
+            run_id=run_id,
+            rule_id=rule_id,
+            category=rule.category,
+            title=f"{rule.name} ({len(ordered)} distinct values)",
+            severity=str(rule.severity),
+            confidence=max(f.confidence for f in ordered),
+            value_masked=f"{len(ordered)} values, e.g. {samples}",
+            value_hash=cluster_hash,
+            entropy=anchor.entropy,
+            context_snippet=anchor.context_snippet,
+            cwe=rule.cwe,
+            tags=[*rule.tags, "clustered"],
+            remediation_md=rule.remediation,
+            detected_by=DetectedBy.RULE,
+            status=FindingStatus.OPEN,
+        )
+        kept.append(cluster)
+
+        seen: set[tuple[str, int | None]] = set()
+        for finding in ordered:
+            for location in locations_by_finding[finding.id]:
+                key = (location.artifact_id, location.offset)
+                if key in seen:
+                    continue
+                seen.add(key)
+                kept_locations.append(
+                    FindingLocation(
+                        finding_id=cluster_id,
+                        run_id=run_id,
+                        artifact_id=location.artifact_id,
+                        path_in_tree=location.path_in_tree,
+                        offset=location.offset,
+                        section=location.section,
+                        encoding=location.encoding,
+                    )
+                )
+
+        log.info(
+            "correlator.clustered",
+            run_id=run_id,
+            rule_id=rule_id,
+            collapsed=len(ordered),
+            locations=len(seen),
+        )
+
+    result.findings = kept
+    result.locations = kept_locations
 
 
 def _evidence_sort_key(item: Evidence) -> tuple[str, str, str, int]:

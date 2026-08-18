@@ -71,6 +71,27 @@ class Rule:
     max_length: int = 4096
     encodings: tuple[str, ...] = ("ascii", "utf-16le")
 
+    requires_nearby: tuple[str, ...] = ()
+    """Keywords that must appear within ``nearby_window`` characters of the
+    match. This is what makes a shape-based rule specific rather than a
+    high-entropy string detector: forty base64 characters are meaningless,
+    forty base64 characters beside ``aws_secret_access_key`` are a credential."""
+
+    nearby_window: int = 120
+
+    shape_policy: str = "context"
+    """How much of the structural filter to apply (``core.rules.shape``).
+
+    ``context`` (default) rejects only on surroundings — blob slices and
+    encoded structure. Safe for every rule anchored on a distinctive prefix.
+    ``strict`` also rejects on the value's own shape, and belongs only to
+    rules that match on shape alone. ``off`` disables the filter for rules
+    whose match *is* structural, like the PEM header."""
+
+    require_mixed_case: bool = False
+    """Require upper + lower + digits. Vendor-issued secrets have this shape;
+    a single-class run of the same length is almost always encoded data."""
+
     enabled: bool = True
     examples_positive: tuple[str, ...] = field(default=(), repr=False)
     examples_negative: tuple[str, ...] = field(default=(), repr=False)

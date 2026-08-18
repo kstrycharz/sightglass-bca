@@ -20,6 +20,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 
 from core.rules.model import Rule, RulePack, shannon_entropy
+from core.rules.shape import ShapePolicy, classify, has_nearby
 
 MIN_STRING_LENGTH = 6
 MAX_STRING_LENGTH = 8192
@@ -191,11 +192,38 @@ def _apply_rule(
             value = pattern.extract(match)
             if not value or not rule.accepts(value):
                 continue
+
             if pack.is_known_false_positive(value):
                 # Public test keys, RFC samples, AKIAIOSFODNN7EXAMPLE. Dropped
                 # here rather than surfaced-and-suppressed: nobody wants a
                 # report whose top finding is the AWS documentation example.
                 continue
+
+            # Proximity. A shape-based rule without required context is a
+            # high-entropy string detector wearing a credential's name.
+            if rule.requires_nearby and not has_nearby(
+                extracted.value, match.start(), rule.requires_nearby, rule.nearby_window
+            ):
+                continue
+
+            # Structure. This is what stops a 40-character window carved out of
+            # a certificate or a PDF stream being reported as a critical
+            # credential — measured at 96.8% of all matches on a real artifact
+            # before this existed.
+            if rule.shape_policy != "off":
+                verdict = classify(
+                    value,
+                    haystack=extracted.value,
+                    start=match.start(),
+                    end=match.end(),
+                    policy=(
+                        ShapePolicy.STRICT if rule.shape_policy == "strict" else ShapePolicy.CONTEXT
+                    ),
+                    require_mixed_case=rule.require_mixed_case,
+                )
+                if verdict.rejected:
+                    continue
+
             absolute = extracted.offset + match.start() * width
             yield Match(
                 rule_id=rule.id,
