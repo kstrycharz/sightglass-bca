@@ -201,6 +201,31 @@ hides a shipped private key. Below the floor the model is trusted to reduce
 noise, which is where the value is anyway.
 **Rejected:** trusting verdicts uniformly; requiring human confirmation for
 every verdict, which would defeat the purpose of triage.
+### ADR-0013 — The dashboard proxies the API at runtime, not via a rewrite (2026-08-17)
+Browser calls go through `web/app/api/[...path]/route.ts`, a Route Handler
+using `node:http`. `next.config.ts` declares no `rewrites()`.
+**Rationale:** two failures, both found only by using the UI. Next resolves
+`rewrites()` at *build* time and bakes the result into the routes manifest, so
+an image built without `SIGHTGLASS_API_URL` proxies to `localhost:8000`
+forever — and since server components read the env at runtime, every page
+renders fine and only uploads, triage, and status changes fail with a 500.
+Then `fetch` proved unusable for the proxy itself: Next patches global fetch
+and drops `duplex: "half"`, so a streamed request body fails with a bare
+"fetch failed" while the identical stream works through plain Node.
+`node:http` also pipes uploads instead of buffering them, so a 2 GB installer
+never has to fit in the dashboard's memory.
+**Rejected:** passing the API URL as a build arg (couples the image to one
+deployment topology); calling the API cross-origin with CORS (a findings page
+is a list of a company's exposed secrets).
+
+### ADR-0014 — Durations are measured with a monotonic clock (2026-08-17)
+`SandboxResult.duration_s` is a stored field fed by `time.monotonic()`, not
+`finished_at - started_at`.
+**Rationale:** observed in a real run — Docker Desktop's VM corrected its clock
+mid-scan and a completed stage reported **-42.4 seconds**. Wall clock jumps
+backwards on NTP correction and VM suspend/resume. The timestamps remain for
+display and audit; the number a human reads comes from a clock that only moves
+forward.
 ---
 
 ## 4. Progress log

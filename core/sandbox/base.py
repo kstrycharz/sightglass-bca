@@ -64,9 +64,15 @@ class SandboxResult:
     error: str | None = None
     """Human-readable reason for a non-``COMPLETED`` status."""
 
-    @property
-    def duration_s(self) -> float:
-        return (self.finished_at - self.started_at).total_seconds()
+    duration_s: float = 0.0
+    """Elapsed time, measured with a **monotonic** clock.
+
+    Deliberately a stored field rather than ``finished_at - started_at``.
+    Wall-clock time can jump backwards — NTP correction, VM suspend and
+    resume — and Docker Desktop's VM does it often enough that this produced a
+    negative duration in practice. The timestamps stay for display and audit;
+    the number a human reads comes from a clock that only moves forward.
+    """
 
     @property
     def ok(self) -> bool:
@@ -83,6 +89,7 @@ class SandboxResult:
         container_id: str | None = None,
         stdout: bytes = b"",
         stderr: bytes = b"",
+        duration_s: float = 0.0,
     ) -> SandboxResult:
         now = datetime.now(UTC)
         return cls(
@@ -95,6 +102,7 @@ class SandboxResult:
             finished_at=now,
             container_id=container_id,
             error=error,
+            duration_s=max(duration_s, 0.0),
         )
 
 

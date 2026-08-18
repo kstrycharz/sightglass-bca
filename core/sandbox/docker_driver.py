@@ -16,6 +16,7 @@ Notes on decisions that are easy to get wrong and hard to notice:
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -168,6 +169,9 @@ class DockerDriver(SandboxDriver):
         self._validate_mounts(spec)
 
         started_at = datetime.now(UTC)
+        # Monotonic for elapsed time, wall clock for the audit timestamps. See
+        # SandboxResult.duration_s for why these are not the same measurement.
+        started_monotonic = time.monotonic()
         try:
             kwargs = self._build_create_kwargs(spec)
         except Exception as exc:
@@ -180,7 +184,11 @@ class DockerDriver(SandboxDriver):
         except Exception as exc:
             log.error("sandbox.create_failed", analyzer=spec.analyzer, error=str(exc))
             return SandboxResult.failure(
-                spec, SandboxStatus.START_FAILED, str(exc), started_at=started_at
+                spec,
+                SandboxStatus.START_FAILED,
+                str(exc),
+                started_at=started_at,
+                duration_s=time.monotonic() - started_monotonic,
             )
 
         container_id = str(container.id)
@@ -195,6 +203,7 @@ class DockerDriver(SandboxDriver):
                 str(exc),
                 started_at=started_at,
                 container_id=container_id,
+                duration_s=time.monotonic() - started_monotonic,
             )
 
         log.info(
@@ -232,6 +241,7 @@ class DockerDriver(SandboxDriver):
                 container_id=container_id,
                 image_digest=digest,
                 error=error,
+                duration_s=time.monotonic() - started_monotonic,
             )
         except Exception as exc:
             log.error(
@@ -246,6 +256,7 @@ class DockerDriver(SandboxDriver):
                 str(exc),
                 started_at=started_at,
                 container_id=container_id,
+                duration_s=time.monotonic() - started_monotonic,
             )
         finally:
             if spec.auto_remove:

@@ -224,6 +224,59 @@ class TestFailureHandling:
             driver.run(make_spec(run_root, user="0:0"))
 
 
+class TestDurationMeasurement:
+    """Durations come from a monotonic clock, not from the wall-clock stamps.
+
+    Observed in practice: Docker Desktop's VM corrected its clock mid-scan and
+    a completed stage reported -42.4 seconds. A negative duration in a report
+    looks like a broken product and undermines every other number next to it.
+    """
+
+    def test_duration_is_independent_of_wall_clock_stamps(self) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        from core.sandbox.base import SandboxResult
+
+        started = datetime.now(UTC)
+        result = SandboxResult(
+            spec=_bare_spec(),
+            status=SandboxStatus.COMPLETED,
+            exit_code=0,
+            stdout=b"",
+            stderr=b"",
+            # Clock jumped backwards between start and finish.
+            started_at=started,
+            finished_at=started - timedelta(seconds=42),
+            duration_s=1.25,
+        )
+        assert result.duration_s == 1.25
+
+    def test_failure_clamps_a_negative_duration(self) -> None:
+        from core.sandbox.base import SandboxResult
+
+        result = SandboxResult.failure(
+            _bare_spec(), SandboxStatus.START_FAILED, "boom", duration_s=-5.0
+        )
+        assert result.duration_s == 0.0
+
+    def test_real_run_reports_a_non_negative_duration(
+        self, run_root: Path, repo_root: Path
+    ) -> None:
+        class ExplodingClient:
+            class containers:  # noqa: N801 - mirrors the docker-py attribute
+                @staticmethod
+                def create(**kwargs: Any) -> Any:
+                    raise RuntimeError("no such image")
+
+        driver = DockerDriver(run_root=run_root, repo_root=repo_root, client=ExplodingClient())
+        result = driver.run(make_spec(run_root))
+        assert result.duration_s >= 0.0
+
+
+def _bare_spec() -> SandboxSpec:
+    return SandboxSpec(image="x", run_id="run-1", analyzer="hello")
+
+
 class TestHelpers:
     def test_timeout_detection_looks_through_the_exception_chain(self) -> None:
         class ReadTimeoutError(Exception):
