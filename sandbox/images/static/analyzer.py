@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import platform
+import re
 import sys
 import time
 from pathlib import Path
@@ -24,7 +25,7 @@ from typing import Any
 sys.path.insert(0, "/opt/sightglass")
 
 from core.rules import load_rule_pack, scan_file
-from core.rules.scanner import MIN_STRING_LENGTH
+from core.rules.scanner import MIN_STRING_LENGTH, extract_strings
 
 SCHEMA_VERSION = 1
 INPUT_DIR = Path("/input")
@@ -139,6 +140,84 @@ def find_artifacts() -> list[Path]:
     return sorted(p for p in INPUT_DIR.rglob("*") if p.is_file() and not p.is_symlink())
 
 
+# Shapes that are worth a human's (or a model's) attention when nothing matched
+# them. Deliberately narrow: the residue is for *discovering rules*, so it wants
+# strings that look like configuration, endpoints, or identifiers — not every
+# unmatched string in a 34 MB installer.
+_RESIDUE_INTERESTING = re.compile(
+    r"""(?x)
+    (?: [a-z][a-z0-9+.\-]{1,14} :// )          # any URI scheme
+  | (?: [A-Za-z]:\\ | //| \\\\ )               # absolute or UNC paths
+  | (?: \b[a-z0-9-]{2,40}(?:\.[a-z0-9-]{2,40}){2,} \b )   # 3+ label hostnames
+  | (?: \b[A-Za-z0-9_-]{2,30} \s* [=:] \s* \S{8,} )       # key = value
+  | (?: \b(?:passwd|password|secret|token|apikey|api_key|credential|licen[cs]e)\b )
+    """,
+    re.IGNORECASE,
+)
+
+# Document and container structure. Measured: without this, a sample from a
+# release containing seven PDFs is ~90% PDF object syntax, which crowds out the
+# handful of strings actually worth a reader's attention.
+_RESIDUE_BORING = re.compile(
+    r"""(?xi)
+    \.(?:dll|exe|png|jpg|gif|xml|xsd|resources)$
+  | ^(?:System|Microsoft|Windows)\.
+  | <</ | /Subtype | /Rect\[ | endobj | endstream | /FlateDecode | /Font
+  | ^\s*[%&'()*\d:;<>?@\[\]^_`|~-]+\s*$        # punctuation and digit runs
+  | \\(?:par|fonttbl|colortbl|viewkind|uc1|pard)\b   # RTF control words
+  | ^(?:https?://(?:www\.)?[a-z0-9-]+\.[a-z]{2,6}/?)$   # bare public URLs
+    """
+)
+
+
+def collect_residue(artifacts: list[Path], pack: Any, limit: int) -> list[dict[str, Any]]:
+    """Sample strings that no rule matched but that look like they might matter.
+
+    This is the honest version of "what did we miss?". A scanner cannot report
+    what it has no pattern for, so the only way to find the next rule is to
+    look at what fell through — which is exactly the loop that produced the
+    `svn+ssh://` rule in this pack.
+    """
+    seen: set[str] = set()
+    residue: list[dict[str, Any]] = []
+
+    for artifact in artifacts:
+        if len(residue) >= limit:
+            break
+        try:
+            data = artifact.read_bytes()
+        except OSError:
+            continue
+
+        matched_spans = {(m.offset, len(m.value)) for m in scan_file(str(artifact), pack)}
+        matched_offsets = {offset for offset, _ in matched_spans}
+
+        for extracted in extract_strings(data):
+            if len(residue) >= limit:
+                break
+            value = extracted.value.strip()
+            if len(value) < 12 or len(value) > 300:
+                continue
+            if extracted.offset in matched_offsets:
+                continue
+            if _RESIDUE_BORING.search(value) or not _RESIDUE_INTERESTING.search(value):
+                continue
+            key = value[:120]
+            if key in seen:
+                continue
+            seen.add(key)
+            residue.append(
+                {
+                    "value": value[:300],
+                    "offset": extracted.offset,
+                    "encoding": extracted.encoding,
+                    "relative_path": artifact.relative_to(INPUT_DIR).as_posix(),
+                }
+            )
+
+    return residue
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Sightglass static analyzer")
     parser.add_argument("--min-string-length", type=int, default=MIN_STRING_LENGTH)
@@ -147,6 +226,17 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         default=512 * 1024 * 1024,
         help="truncate artifacts larger than this; recorded in the result",
+    )
+    parser.add_argument(
+        "--emit-residue",
+        type=int,
+        default=0,
+        metavar="N",
+        help=(
+            "sample up to N strings that no rule matched, for rule discovery. "
+            "This is the input to the AI author loop: the interesting things a "
+            "scanner misses are by definition the things no pattern describes."
+        ),
     )
     parser.add_argument(
         "--include-plaintext",
@@ -213,6 +303,7 @@ def main(argv: list[str] | None = None) -> int:
     result: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "analyzer": "static",
+        "residue": collect_residue(artifacts, pack, args.emit_residue) if args.emit_residue else [],
         "rule_pack": {"version": pack.version, "hash": pack.hash},
         "tool_versions": {
             "python": platform.python_version(),

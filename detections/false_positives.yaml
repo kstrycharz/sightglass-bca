@@ -85,3 +85,20 @@ known_benign:
     # prefix. Both appear in shipped crypto libraries as self-test data.
     - 000102030405060708090a0b0c0d0e0f
     - 2b7e151628aed2a6abf7158809cf4f3c
+
+  oss_module_namespaces:
+    # Package and symbol namespaces from vendored open-source libraries. These
+    # are compiled-in identifiers, not hostnames — a Go binary carries
+    # `google.golang.org/grpc/internal/...` in its symbol table, and matching
+    # it as internal infrastructure is a false positive found on a real scan.
+    - grpc.internal
+    - google.golang.org
+    - github.com
+    - gopkg.in
+    - golang.org
+    - k8s.io
+    - type.googleapis.com
+    - crl3.digicert.com
+    - crl4.digicert.com
+    - ocsp.digicert.com
+    - cacerts.digicert.com

@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { api, type Finding, type RunDetail } from "@/lib/api";
+import { SEVERITY_ORDER, api, type Finding, type RunDetail, type Severity } from "@/lib/api";
 import {
   ErrorNotice,
   Metric,
@@ -11,6 +11,7 @@ import {
   duration,
   relativeTime,
 } from "@/components/ui";
+import { BarList, PostureGauge, SeverityDonut, SeverityLegend } from "@/components/charts";
 import { ArtifactTree } from "@/components/artifact-tree";
 import { FindingsExplorer } from "@/components/findings-explorer";
 import { RunProgress } from "@/components/run-progress";
@@ -38,6 +39,23 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
   const blocking =
     (run.severity_counts.critical ?? 0) + (run.severity_counts.high ?? 0);
   const degraded = run.stages.filter((s) => s.status !== "completed");
+
+  // Category rollup: which class of problem this build has, ranked. Severity
+  // colouring follows the worst finding in each category rather than the count.
+  const categoryTotals = new Map<string, { value: number; tone: Severity }>();
+  for (const finding of findings) {
+    const current = categoryTotals.get(finding.category);
+    const worse =
+      current === undefined ||
+      SEVERITY_ORDER.indexOf(finding.severity) < SEVERITY_ORDER.indexOf(current.tone);
+    categoryTotals.set(finding.category, {
+      value: (current?.value ?? 0) + 1,
+      tone: worse ? finding.severity : (current?.tone ?? finding.severity),
+    });
+  }
+  const categoryBars = [...categoryTotals.entries()]
+    .map(([label, { value, tone }]) => ({ label, value, tone }))
+    .sort((a, b) => b.value - a.value);
 
   return (
     <div className="space-y-5">
@@ -72,26 +90,58 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
         <RunProgress runId={run.id} initialStatus={run.status} />
       ) : (
         <>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <Metric
-              label="Release-blocking"
-              value={blocking}
-              hint="critical + high"
-              tone={blocking > 0 ? "bad" : "good"}
-            />
-            <Metric label="Total findings" value={run.finding_count} />
-            <Metric
-              label="Files analysed"
-              value={run.artifact_count}
-              hint={run.artifact_count > 1 ? "unpacked recursively" : "no nested containers"}
-            />
-            <Metric
-              label="New vs previous"
-              value={run.new_since_previous ?? "—"}
-              hint={run.previous_run_id ? "since last run" : "baseline run"}
-              tone={run.new_since_previous ? "warn" : "neutral"}
-            />
+          <div className="grid gap-4 lg:grid-cols-12">
+            <Panel title="Posture" className="lg:col-span-4">
+              <div className="flex flex-col items-center px-4 py-5">
+                <PostureGauge blocking={blocking} total={run.finding_count} />
+                <p className="mt-3 max-w-[16rem] text-center text-xs text-content-muted">
+                  {blocking === 0
+                    ? "No critical or high findings in this artifact."
+                    : "A release gate set to fail on high or above would block this build."}
+                </p>
+              </div>
+            </Panel>
+
+            <Panel title="Severity mix" className="lg:col-span-4">
+              <div className="flex items-center justify-center gap-6 px-4 py-5">
+                <SeverityDonut
+                  counts={run.severity_counts}
+                  size={150}
+                  thickness={15}
+                  centerValue={run.finding_count}
+                  centerLabel="findings"
+                />
+                <div className="min-w-[7rem]">
+                  <SeverityLegend counts={run.severity_counts} />
+                </div>
+              </div>
+            </Panel>
+
+            <div className="grid gap-3 sm:grid-cols-2 lg:col-span-4 lg:grid-cols-1">
+              <Metric
+                label="Files analysed"
+                value={run.artifact_count}
+                hint={
+                  run.artifact_count > 1 ? "unpacked recursively" : "no nested containers"
+                }
+              />
+              <Metric
+                label="New vs previous"
+                value={run.new_since_previous ?? "—"}
+                hint={run.previous_run_id ? "since last run" : "baseline run"}
+                tone={run.new_since_previous ? "warn" : "neutral"}
+              />
+            </div>
           </div>
+
+          {categoryBars.length > 0 && (
+            <Panel
+              title="Exposure by category"
+              description="Which class of problem this build has"
+            >
+              <BarList items={categoryBars} />
+            </Panel>
+          )}
 
           <div className="grid gap-5 lg:grid-cols-3">
             <Panel title="Analyzer stages" className="lg:col-span-2">

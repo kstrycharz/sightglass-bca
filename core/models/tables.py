@@ -121,6 +121,12 @@ class RunManifest(Base, TimestampMixin):
     """analyzer name -> resolved sha256. Digests, not tags: tags drift."""
     tool_versions: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
+    residue: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    """Strings no rule matched, sampled during the scan. Input to the AI
+    rule-author loop (core/llm/discovery.py). Deliberately stored with the
+    manifest rather than as evidence: it is not a finding and never becomes
+    one — a human merges a proposed rule, and the *rule* produces findings."""
+
     run: Mapped[Run] = relationship(back_populates="manifest")
 
     @property

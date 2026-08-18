@@ -18,12 +18,18 @@ from core.orchestrator.celery_app import QUEUE_CONTROL, celery_app
 # Celery's autodiscovery imports <package>.tasks and nothing else, so the
 # analysis tasks are re-exported here to get registered. Importing them at the
 # bottom would be tidier but would not survive celery inspect registered.
-from core.orchestrator.scan_tasks import scan_run, triage_run_task
+from core.orchestrator.scan_tasks import discover_rules_task, scan_run, triage_run_task
 from core.sandbox import Reaper, SandboxSpec, driver_from_settings
 
 log = structlog.get_logger(__name__)
 
-__all__ = ["reap_containers", "sandbox_smoke_test", "scan_run", "triage_run_task"]
+__all__ = [
+    "discover_rules_task",
+    "reap_containers",
+    "sandbox_smoke_test",
+    "scan_run",
+    "triage_run_task",
+]
 
 
 def _driver() -> Any:

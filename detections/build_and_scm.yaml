@@ -1,0 +1,265 @@
+# Source-control and build-infrastructure disclosure.
+#
+# Every rule in this file was written from a real finding in a shipped vendor
+# release, not from imagination. The artifact was a hydraulic valve
+# configurator; its device-description XML carried, for every supported
+# firmware revision:
+#
+#   svn+ssh://delinux03.de.moog.com/data/svn/nvce/tags/B99133-DV002-B-211b_11827
+#   dsc="FirmwareSourceCodeTag"
+#
+# That single string discloses the internal SCM host and its transport, the
+# repository layout, the naming convention for internal build servers, and the
+# firmware part-number scheme — none of which the customer needs to configure a
+# valve. It is exactly the class of leak this product exists to find, and the
+# rule pack walked straight past it because the hostname sits on the company's
+# *public* domain rather than on `.internal` or `.corp`.
+
+rules:
+  - id: scm-url
+    name: Source control URL
+    category: internal-infrastructure
+    severity: high
+    confidence: 0.9
+    cwe: CWE-200
+    description: >
+      A version-control endpoint embedded in a shipped artifact. Discloses the
+      SCM host, its transport, and the repository path — and where the scheme
+      is ssh-based, names a service that expects credentials and is therefore
+      worth attacking. Build metadata like this is routinely injected by a
+      release script that stamps the source revision into the product.
+    remediation: |
+      Stamp a version and a commit hash, not a resolvable URL. If provenance
+      must be embedded for support purposes, record an opaque build identifier
+      that your release system can resolve internally, and keep the mapping on
+      the inside.
+
+      Check the template that produces this — it is usually a single
+      `$Id$`-style keyword expansion, a CI variable, or an XML field populated
+      from `svn info` / `git remote -v` at build time.
+    patterns:
+      # ssh-transported SCM is the strongest signal: it names a host that takes
+      # credentials, not a public read-only mirror.
+      - regex: '((?:svn|git|hg|bzr)\+ssh://[^\s"''<>&]{4,200})'
+        capture: 1
+      - regex: '(ssh://(?:git|svn|hg)@[^\s"''<>&]{4,200})'
+        capture: 1
+      - regex: '((?:svn|git|hg)://[^\s"''<>&]{4,200})'
+        capture: 1
+      # Repository paths on an http(s) host: /svn/, /git/, bare .git remotes.
+      - regex: '(https?://[a-z0-9.\-]{4,80}/(?:svn|git|scm|repos?)/[^\s"''<>&]{2,160})'
+        capture: 1
+      - regex: '(https?://[a-z0-9.\-]{4,80}/[^\s"''<>&]{2,120}\.git)\b'
+        capture: 1
+    tags: [scm, internal-infrastructure, build-metadata]
+    tests:
+      positive:
+        - 'svn+ssh://delinux03.de.moog.com/data/svn/nvce/tags/B99133-DV002-B-211b_11827'
+        - 'ssh://git@gitlab.internal.example.com:2222/firmware/bootloader.git'
+      negative:
+        - "https://github.com/example/project"
+        - "https://www.example.com/downloads"
+
+  - id: internal-server-hostname
+    name: Internal server hostname
+    category: internal-infrastructure
+    severity: medium
+    confidence: 0.75
+    cwe: CWE-200
+    description: >
+      A hostname following an internal asset-naming convention — a role or site
+      prefix with a sequence number, such as `delinux03.de.example.com` or
+      `buildsrv02.corp.example.net`. These are infrastructure names, not
+      published services, and they disclose site layout, platform, and
+      numbering. Public service names (`www`, `api`, `cdn`, `crl`) are excluded
+      because they are meant to be seen.
+    remediation: |
+      Remove infrastructure hostnames from shipped artifacts. Where the product
+      genuinely needs an endpoint, point it at a published, intentional service
+      name and configure the rest at install or provisioning time.
+
+      If this came from build metadata rather than runtime configuration, fix
+      the build step that injected it — the hostname is usually a side effect
+      of stamping a source revision or a UNC build path.
+    patterns:
+      # Role/site prefix + digits, on a subdomain of a real domain. The
+      # subdomain requirement matters: `foo3.example.com` is far more often a
+      # public shard than `foo3.de.example.com` is.
+      - regex: '\b((?!www|api|cdn|crl|ocsp|mail|smtp|imap|pop|ftp|ns|dns|static|img|media|docs|help|shop|blog|download|update|time|ntp|pool)[a-z][a-z0-9-]{1,28}[0-9]{1,3}\.[a-z0-9-]{2,30}\.[a-z0-9-]{2,30}\.[a-z]{2,12})\b'
+        capture: 1
+      # Explicit infrastructure role words anywhere in the leftmost label.
+      - regex: '\b((?:build|jenkins|teamcity|bamboo|tfs|azagent|runner|vsts|svn|git|gitlab|artifactory|nexus|jira|confluence|vcenter|esxi?|nas|san|dc[0-9]|ad[0-9]|sql|oracle|postgres|mssql)[a-z0-9-]{0,24}\.[a-z0-9-]{2,30}\.[a-z]{2,12})\b'
+        capture: 1
+    tags: [internal-infrastructure, disclosure]
+    tests:
+      positive:
+        - "delinux03.de.moog.com"
+        - "jenkins.corp.example.com"
+      negative:
+        # Public service endpoints that follow the same digit-suffix shape.
+        - "crl3.digicert.com"
+        - "www.example.com"
+
+  - id: ci-agent-workspace-path
+    name: CI build-agent workspace path
+    category: ip-exposure
+    severity: low
+    confidence: 0.85
+    cwe: CWE-200
+    description: >
+      A continuous-integration agent's working directory left in the binary,
+      such as `C:\agent\_work\66\s\src\...`. Identifies the CI product, the
+      agent layout, the pipeline or job number, and the source tree structure.
+      Individually minor; collectively it maps the build system, and its
+      presence proves the build embeds its own environment — which is how
+      credentials end up embedded too.
+    remediation: |
+      Strip source paths at link time. On MSVC use `/PDBALTPATH:%_PDB%` and
+      keep full PDBs in a symbol server rather than beside the binary; on
+      GCC/Clang use `-ffile-prefix-map`; on Go use `-trimpath`; on Rust use
+      `--remap-path-prefix`.
+
+      Third-party components frequently carry their own vendor's agent paths.
+      Those are the vendor's disclosure rather than yours, but they still tell
+      an attacker which components you ship and at what version.
+    patterns:
+      - regex: '([A-Za-z]:\\[Aa]gent\\_work\\[0-9]{1,4}\\[^\s"<>|]{0,150})'
+        capture: 1
+      - regex: '([A-Za-z]:\\[aA]\\_work\\[0-9]{1,4}\\[^\s"<>|]{0,150})'
+        capture: 1
+      - regex: '(/home/(?:jenkins|gitlab-runner|buildbot|teamcity)/[^\s"<>|:]{4,150})'
+        capture: 1
+      - regex: '(/__w/[0-9]{1,3}/[^\s"<>|:]{2,150})'
+        capture: 1
+      - regex: '(/builds/[a-z0-9_\-]{2,40}/[^\s"<>|:]{2,150})'
+        capture: 1
+    encodings: [ascii, utf-16le]
+    tags: [ci-leak, build-metadata, ip-exposure]
+    tests:
+      positive:
+        - 'c:\agent\_work\66\s\src\libs\dutil\fileutil.cpp'
+        - '/home/jenkins/workspace/firmware-release/src/main.c'
+      negative:
+        - 'C:\Program Files\Example\app.exe'
+
+  - id: windows-source-file-path
+    name: Source file path in a Windows binary
+    category: ip-exposure
+    severity: low
+    confidence: 0.8
+    cwe: CWE-200
+    description: >
+      An absolute source-file path compiled into the artifact. Discloses the
+      build machine's directory layout, often a developer or service account
+      name, and the internal module structure of the product. Distinct from the
+      PDB rule, which only sees debug-symbol paths — assertion strings and
+      logging macros embed `.c` and `.cpp` paths even in release builds.
+    remediation: |
+      Same linker settings as the PDB path finding. Additionally, audit
+      assertion and logging macros: `__FILE__` expands to the full compile-time
+      path unless the build maps it, and it survives into release binaries.
+    patterns:
+      - regex: '([A-Za-z]:\\[^\s"<>|*?\r\n]{6,160}\.(?:c|cc|cpp|cxx|h|hpp|cs|vb|fs|rs|go|m|mm))\b'
+        capture: 1
+    encodings: [ascii, utf-16le]
+    tags: [ip-exposure, build-metadata, windows]
+    tests:
+      positive:
+        - 'c:\agent\_work\66\s\src\ext\uiextension\ca\printeula.cpp'
+      negative:
+        - 'C:\Windows\System32\kernel32.dll'
+
+  - id: developer-profile-path
+    name: Developer account name in a user profile path
+    category: ip-exposure
+    severity: medium
+    confidence: 0.85
+    cwe: CWE-200
+    description: >
+      A per-user profile path naming the account that built or packaged the
+      artifact — `C:\Users\<name>\AppData\...` or `/Users/<name>/...`. This
+      identifies a named employee and their workstation layout, and it is
+      usually accidental: a shortcut, a config default, or a resource baked in
+      from whatever machine ran the packaging step.
+
+      Found in a real release as `IconFile=C:\Users\shoepfer\AppData\Local\
+      Mozilla\Firefox\Profiles\...` inside a shipped `.URL` file, corroborated
+      by the same person's name in the PDF metadata of the accompanying
+      documentation.
+    remediation: |
+      Build and package on a clean agent, not a workstation, and generate
+      shortcuts and resource files from templates with relative or
+      well-known-folder paths (`%APPDATA%`, `%ProgramFiles%`) rather than
+      absolute ones.
+
+      Audit shipped `.URL`, `.lnk`, `.config`, and manifest files — they carry
+      absolute paths far more often than compiled code does. Also check
+      document metadata: Office and PDF exports embed the author's name unless
+      the pipeline strips it.
+    patterns:
+      # System and service accounts are excluded: they name no one.
+      - regex: '([A-Za-z]:\\Users\\(?!Public\b|Default\b|Default User\b|All Users\b|Administrator\b)[A-Za-z][A-Za-z0-9._\- ]{1,32}\\[^\s"<>|*?\r\n]{0,140})'
+        capture: 1
+      - regex: '(/(?:home|Users)/(?!root\b|shared\b|Shared\b)[a-z][a-z0-9._\-]{1,32}/(?:AppData|Library|Desktop|Documents|\.config|\.ssh)[^\s"<>|:]{0,140})'
+        capture: 1
+    encodings: [ascii, utf-16le]
+    tags: [ip-exposure, pii, build-metadata]
+    tests:
+      positive:
+        - 'IconFile=C:\Users\shoepfer\AppData\Local\Mozilla\Firefox\Profiles\8p7ab414.default-esr\cache'
+      negative:
+        - 'C:\Users\Public\Documents\readme.txt'
+        - 'C:\Program Files\Example\app.exe'
+
+  - id: document-author-metadata
+    name: Employee name in document metadata
+    category: ip-exposure
+    severity: low
+    confidence: 0.7
+    cwe: CWE-200
+    description: >
+      An author or creator name left in the XMP/Dublin Core metadata of a
+      document shipped with the product. Names a specific employee, and taken
+      across a release names the team. Harmless individually; useful to someone
+      building a phishing pretext, and trivially avoidable.
+    remediation: |
+      Strip document metadata in the release pipeline — `exiftool -all=` for
+      PDFs, or the "Inspect Document → Remove Personal Information" step in
+      Office. Better, generate customer-facing documentation from source in CI
+      so no workstation identity is ever attached to it.
+    patterns:
+      - regex: '<dc:creator><rdf:Seq><rdf:li>([^<]{3,60})</rdf:li>'
+        capture: 1
+      - regex: '<(?:xmp|pdf):Author>([^<]{3,60})</(?:xmp|pdf):Author>'
+        capture: 1
+    tags: [ip-exposure, pii, documentation]
+    tests:
+      positive:
+        - '<dc:creator><rdf:Seq><rdf:li>Hoepfer, Steffen</rdf:li></rdf:Seq></dc:creator>'
+      negative:
+        - '<dc:title><rdf:Alt><rdf:li>Application Instruction</rdf:li></rdf:Alt></dc:title>'
+
+  - id: internal-build-tag
+    name: Internal build or part-number tag
+    category: ip-exposure
+    severity: low
+    confidence: 0.5
+    cwe: CWE-200
+    description: >
+      An internal revision or part-number tag stamped into the artifact, of the
+      form seen in firmware release tagging. Discloses the internal numbering
+      scheme and, taken across a release, the full set of product variants and
+      revisions — which is competitive information a customer never asked for.
+    remediation: |
+      Ship a customer-facing version. Keep internal part numbers and revision
+      tags in the systems that need them.
+    patterns:
+      # e.g. B99133-DV002-B-211b_11827 — part, variant, revision, changeset.
+      - regex: '\b([A-Z][0-9]{4,6}-[A-Z]{2,4}[0-9]{2,4}-[A-Z]-[0-9]{3}[a-zA-Z]?_[0-9]{3,6}[A-Z]?)\b'
+        capture: 1
+    tags: [ip-exposure, firmware, low-confidence]
+    tests:
+      positive:
+        - "B99133-DV002-B-211b_11827"
+      negative:
+        - "VERSION-1-2-3"

@@ -55,6 +55,11 @@ STATIC_TIMEOUT_S = 1800
 # for little benefit — findings carry their own context snippets.
 RETAIN_EXTRACTED_MAX_BYTES = 32 * 1024 * 1024
 
+# Strings no rule matched, sampled for the AI rule-author loop. Collected on
+# every scan because it costs one extra pass and is the only honest answer to
+# "what did we miss?" — see core/llm/discovery.py.
+RESIDUE_SAMPLE_SIZE = 400
+
 
 @dataclass(slots=True)
 class ScanOutcome:
@@ -182,6 +187,7 @@ def _execute(run: Run, session: Session, run_dir: Path) -> ScanOutcome:
                 **(unpack_payload.get("tool_versions") or {}),
                 **(static_payload.get("tool_versions") or {}),
             },
+            residue=static_payload.get("residue") or [],
         )
     )
     _link_previous_run(run, root, session)
@@ -253,7 +259,7 @@ def _run_static(
     session.add(stage)
     session.flush()
 
-    command: list[str] = []
+    command: list[str] = ["--emit-residue", str(RESIDUE_SAMPLE_SIZE)]
     if run.retain_plaintext:
         command.append("--include-plaintext")
 

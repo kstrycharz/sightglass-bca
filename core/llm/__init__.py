@@ -3,6 +3,7 @@
 Advisory by construction. Nothing here can create a finding; see core.llm.triage.
 """
 
+from core.llm.discovery import DiscoveryResult, RuleProposal, discover_rules, proposals_to_yaml
 from core.llm.provider import (
     Capabilities,
     Completion,
@@ -25,6 +26,7 @@ from core.llm.triage import TriageResult, apply_verdict, build_prompt, triage_fi
 __all__ = [
     "Capabilities",
     "Completion",
+    "DiscoveryResult",
     "EgressBlocked",
     "EgressPolicyGuard",
     "LLMConfig",
@@ -32,12 +34,15 @@ __all__ = [
     "LLMProvider",
     "Message",
     "ProviderHealth",
+    "RuleProposal",
     "TriageResult",
     "apply_verdict",
     "build_prompt",
     "build_provider",
+    "discover_rules",
     "health_check_all",
     "load_config",
+    "proposals_to_yaml",
     "provider_for_role",
     "triage_finding",
     "triage_run",

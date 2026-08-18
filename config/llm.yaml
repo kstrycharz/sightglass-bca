@@ -30,6 +30,14 @@ enabled: true
 # ---------------------------------------------------------------------------
 roles:
   triage: local-fast
+  # Rule authoring: one call per run over a few hundred unmatched strings.
+  #
+  # Routed to the FAST model, despite being judgement work. A reasoning model
+  # spends the same token budget on thinking that it needs for the answer, so
+  # at ~6 tok/s glm-4.7-flash consumed 2000 tokens deliberating and returned
+  # nothing; giving it room would mean a 15-minute call. The 14b emits the
+  # JSON directly. Measured, not assumed.
+  discover: local-fast
   explain: local-reasoning
   remediate: local-reasoning
   summarize: local-reasoning

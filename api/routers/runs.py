@@ -267,3 +267,24 @@ def _build_tree(session: Session, run: Run) -> ArtifactOut | None:
 
     roots = by_parent.get(None, [])
     return build(roots[0]) if roots else None
+
+
+@router.post("/{run_id}/discover")
+def discover(run_id: str) -> dict[str, Any]:
+    """Propose detection rules for what this run's rule pack missed.
+
+    The AI author loop. It reads the strings no rule matched and proposes
+    patterns; the response is YAML for a human to review and merge. Nothing
+    here alters the run's findings, and a proposal that is never merged has no
+    effect on anything.
+    """
+    from core.orchestrator.tasks import discover_rules_task
+
+    try:
+        result: dict[str, Any] = discover_rules_task.apply(args=[run_id]).get()
+    except Exception as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from None
+
+    if result.get("error") and not result.get("proposals"):
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, result["error"])
+    return result

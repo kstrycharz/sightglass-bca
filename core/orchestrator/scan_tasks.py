@@ -107,3 +107,56 @@ def triage_run_task(run_id: str) -> dict[str, Any]:
         "duration_s": round(result.total_duration_s, 2),
         "model": provider.model,
     }
+
+
+@celery_app.task(name="sightglass.discover_rules", queue=QUEUE_LLM, max_retries=0)
+def discover_rules_task(run_id: str) -> dict[str, Any]:
+    """Ask the model to propose rules for what the pack missed on this run.
+
+    This is the AI author loop, and it is the one place a model genuinely
+    belongs in a deterministic scanner: it reads the strings nothing matched
+    and proposes patterns for a human to review. Proposals are never findings —
+    merging one makes it deterministic, and from then on the model is out of
+    the path entirely.
+    """
+    from core.llm import LLMConfigError, discover_rules, load_config, provider_for_role
+    from core.llm.discovery import summarise
+    from core.models import RunManifest
+
+    try:
+        config = load_config()
+        if not config.enabled:
+            return {"run_id": run_id, "error": "the LLM layer is disabled in config/llm.yaml"}
+        # Rule authoring is low-volume, high-judgement work — the opposite of
+        # triage — so it routes to the reasoning model when one is configured.
+        role = "discover" if "discover" in config.roles else "explain"
+        provider = provider_for_role(role, config)
+    except (LLMConfigError, NotImplementedError) as exc:
+        return {"run_id": run_id, "error": str(exc)}
+
+    health = provider.health()
+    if not health.healthy:
+        return {"run_id": run_id, "error": f"provider unavailable: {health.detail}"}
+
+    warm = getattr(provider, "warm", None)
+    if callable(warm):
+        warm()
+
+    with session_scope() as session:
+        manifest = session.scalars(select(RunManifest).where(RunManifest.run_id == run_id)).first()
+        residue = list(manifest.residue or []) if manifest else []
+
+        if not residue:
+            return {
+                "run_id": run_id,
+                "sampled": 0,
+                "proposed": 0,
+                "usable": 0,
+                "error": "no unmatched strings were sampled for this run",
+            }
+
+        result = discover_rules(provider, residue, run_id=run_id)
+        if result.call is not None:
+            session.add(result.call)
+
+    return {"run_id": run_id, **summarise(result)}
