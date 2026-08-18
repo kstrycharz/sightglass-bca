@@ -121,6 +121,11 @@ class RunManifest(Base, TimestampMixin):
     """analyzer name -> resolved sha256. Digests, not tags: tags drift."""
     tool_versions: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
+    recon: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    """The reconnaissance inventory: what kinds of things are in the artifact,
+    swept independently of the rule pack. Not findings — see core/rules/recon.py
+    for why the two are deliberately separate."""
+
     residue: Mapped[list[Any]] = mapped_column(JSON, default=list)
     """Strings no rule matched, sampled during the scan. Input to the AI
     rule-author loop (core/llm/discovery.py). Deliberately stored with the

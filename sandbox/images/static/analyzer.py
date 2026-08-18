@@ -24,7 +24,8 @@ from typing import Any
 
 sys.path.insert(0, "/opt/sightglass")
 
-from core.rules import load_rule_pack, scan_file
+from core.rules import load_rule_pack, scan_file, sweep
+from core.rules.recon import summarise as summarise_recon
 from core.rules.scanner import MIN_STRING_LENGTH, extract_strings
 
 SCHEMA_VERSION = 1
@@ -228,6 +229,16 @@ def main(argv: list[str] | None = None) -> int:
         help="truncate artifacts larger than this; recorded in the result",
     )
     parser.add_argument(
+        "--recon",
+        action="store_true",
+        help=(
+            "inventory what kinds of things are in the artifact — every URI "
+            "scheme, path, hostname, address, and assignment — regardless of "
+            "whether any rule matches them. This is the sweep that finds what "
+            "no rule describes; see core/rules/recon.py."
+        ),
+    )
+    parser.add_argument(
         "--emit-residue",
         type=int,
         default=0,
@@ -300,9 +311,12 @@ def main(argv: list[str] | None = None) -> int:
             }
         )
 
+    inventory = run_recon(artifacts) if args.recon else None
+
     result: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "analyzer": "static",
+        "recon": inventory.to_dict() if inventory is not None else None,
         "residue": collect_residue(artifacts, pack, args.emit_residue) if args.emit_residue else [],
         "rule_pack": {"version": pack.version, "hash": pack.hash},
         "tool_versions": {
@@ -317,7 +331,31 @@ def main(argv: list[str] | None = None) -> int:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     RESULT_PATH.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"scanned {len(artifacts)} file(s): {total_matches} matches", flush=True)
+    if inventory is not None:
+        print(summarise_recon(inventory), flush=True)
     return 0
+
+
+def run_recon(artifacts: list[Path]) -> Any:
+    """Inventory sweep across every staged file.
+
+    Independent of the rule pack on purpose: recon asks "what is in here?" and
+    must stay over-inclusive, while rules ask "is this specific bad thing
+    present?" and must stay precise. Coupling them would drag one failure mode
+    into the other.
+    """
+    collected: list[tuple[str, str, int, str]] = []
+    for artifact in artifacts:
+        try:
+            data = artifact.read_bytes()
+        except OSError:
+            continue
+        relative = artifact.relative_to(INPUT_DIR).as_posix()
+        collected.extend(
+            (extracted.value, relative, extracted.offset, extracted.encoding)
+            for extracted in extract_strings(data)
+        )
+    return sweep(collected)
 
 
 if __name__ == "__main__":

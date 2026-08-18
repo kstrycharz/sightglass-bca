@@ -2,6 +2,7 @@
 
 from core.rules.loader import RuleLoadError, load_rule_pack
 from core.rules.model import Pattern, Rule, RulePack, shannon_entropy
+from core.rules.recon import ReconCategory, ReconInventory, sweep
 from core.rules.scanner import (
     ExtractedString,
     Match,
@@ -18,6 +19,8 @@ __all__ = [
     "ExtractedString",
     "Match",
     "Pattern",
+    "ReconCategory",
+    "ReconInventory",
     "Rule",
     "RuleLoadError",
     "RulePack",
@@ -34,4 +37,5 @@ __all__ = [
     "scan_bytes",
     "scan_file",
     "shannon_entropy",
+    "sweep",
 ]

@@ -188,6 +188,7 @@ def _execute(run: Run, session: Session, run_dir: Path) -> ScanOutcome:
                 **(static_payload.get("tool_versions") or {}),
             },
             residue=static_payload.get("residue") or [],
+            recon=static_payload.get("recon") or {},
         )
     )
     _link_previous_run(run, root, session)
@@ -259,7 +260,7 @@ def _run_static(
     session.add(stage)
     session.flush()
 
-    command: list[str] = ["--emit-residue", str(RESIDUE_SAMPLE_SIZE)]
+    command: list[str] = ["--recon", "--emit-residue", str(RESIDUE_SAMPLE_SIZE)]
     if run.retain_plaintext:
         command.append("--include-plaintext")
 
