@@ -70,7 +70,7 @@ export function SidebarNav() {
   const pathname = usePathname();
 
   return (
-    <aside className="sticky top-0 hidden h-screen w-[228px] shrink-0 flex-col border-r border-border bg-surface md:flex">
+    <aside className="sticky top-0 hidden h-screen w-[228px] shrink-0 flex-col border-r border-border bg-surface shadow-[1px_0_0_0_oklch(0_0_0/0.25)] md:flex">
       <div className="border-b border-border px-5 py-[18px]">
         <Link href="/" className="block">
           <div className="flex items-center gap-2.5">

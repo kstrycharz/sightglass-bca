@@ -1,36 +1,32 @@
 /**
- * Posture overview — the console's home.
+ * Release posture — the console's home.
  *
  * Server-rendered with no client JavaScript: §4 requires the dashboard to
- * render usefully with JS disabled, and every chart here is inline SVG.
+ * render usefully with JS disabled, and every graphic here is inline SVG.
  *
- * The layout answers three questions in descending order of urgency: can we
- * ship, what is wrong, and is it getting better. Everything else is a click
- * away rather than on this page.
+ * Structurally this is a command centre, not a card grid. The verdict for the
+ * most recent build occupies the fold at a size meant to be read across a
+ * room, the fleet numbers sit on one rule beneath it, and everything else is
+ * the run log. A dashboard whose most urgent fact is the same size as its
+ * least urgent one makes the reader do the triage, which is the job the
+ * product is supposed to have done already.
  */
 
 import Link from "next/link";
 import { api, type RunSummary, type Severity } from "@/lib/api";
-import {
-  Button,
-  EmptyState,
-  ErrorNotice,
-  Mono,
-  Panel,
-  SeverityBar,
-  StatusDot,
-  bytes,
-  relativeTime,
-} from "@/components/ui";
-import {
-  BarList,
-  PostureGauge,
-  SeverityDonut,
-  SeverityLegend,
-  TrendBars,
-} from "@/components/charts";
+import { Button, SeverityBar, bytes, relativeTime } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
+
+const SEVERITY_ORDER: Severity[] = ["critical", "high", "medium", "low", "info"];
+
+const SEVERITY_TEXT: Record<Severity, string> = {
+  critical: "text-critical",
+  high: "text-high",
+  medium: "text-medium",
+  low: "text-low",
+  info: "text-info",
+};
 
 function sumCounts(runs: RunSummary[]): Partial<Record<Severity, number>> {
   const totals: Partial<Record<Severity, number>> = {};
@@ -76,245 +72,354 @@ export default async function OverviewPage() {
   }
 
   const completed = runs.filter((r) => r.status === "completed");
-  // Fleet panels use the current build of each artifact; the trend and the run
-  // table deliberately keep full history.
   const current = latestPerArtifact(completed);
   const latest = completed[0];
   const latestCounts = latest?.severity_counts ?? {};
-  const latestBlocking = (latestCounts.critical ?? 0) + (latestCounts.high ?? 0);
-
-  // Oldest-first, so the trend reads left to right like every other chart.
-  const trend = [...completed]
-    .reverse()
-    .slice(-24)
-    .map((run) => ({
-      label: run.artifact_name ?? run.id.slice(0, 8),
-      counts: run.severity_counts,
-    }));
-
-  const worst = [...current]
-    .map((run) => ({
-      label: run.artifact_name ?? run.id.slice(0, 8),
-      value: (run.severity_counts.critical ?? 0) + (run.severity_counts.high ?? 0),
-      tone: "critical" as Severity,
-    }))
-    .filter((entry) => entry.value > 0)
-    .sort((a, b) => b.value - a.value)
-    .slice(0, 6);
+  const blocking = (latestCounts.critical ?? 0) + (latestCounts.high ?? 0);
 
   const fleetCounts = sumCounts(current);
+  const fleetBlocking = (fleetCounts.critical ?? 0) + (fleetCounts.high ?? 0);
+  const fleetTotal = Object.values(fleetCounts).reduce((a, b) => a + b, 0);
   const filesAnalysed = current.reduce((sum, r) => sum + (r.artifact_count ?? 1), 0);
+  const newThisBuild = completed.reduce((sum, r) => sum + (r.new_since_previous ?? 0), 0);
+  const degraded = runs.filter((r) => r.status === "failed").length;
 
   return (
-    <div className="space-y-5">
-      <header className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight">Release posture</h1>
-          <p className="mt-1 text-sm text-content-muted">
-            {current.length} artifact{current.length === 1 ? "" : "s"} ·{" "}
-            {filesAnalysed.toLocaleString()} files analysed ·{" "}
-            {completed.length} completed scan{completed.length === 1 ? "" : "s"}
-          </p>
+    <div className="space-y-7">
+      {error && (
+        <div className="rounded-lg border border-critical/40 bg-critical-bg px-5 py-4">
+          <p className="text-[13px] font-semibold text-critical">API unreachable</p>
+          <p className="mt-1 break-words font-mono text-[11.5px] text-content-muted">{error}</p>
         </div>
-        <Link href="/scan">
-          <Button variant="primary">New scan</Button>
-        </Link>
-      </header>
-
-      {error && <ErrorNotice title="API unreachable" detail={error} />}
-
-      {!error && runs.length === 0 && (
-        <Panel>
-          <EmptyState
-            title="No scans yet"
-            action={
-              <Link href="/scan">
-                <Button variant="primary">Scan an artifact</Button>
-              </Link>
-            }
-          >
-            Upload an installer, executable, archive, or firmware image.
-            Sightglass unpacks it recursively and reports the secrets, internal
-            hostnames, and build metadata baked into it.
-          </EmptyState>
-        </Panel>
       )}
+
+      {!error && runs.length === 0 && <FirstRun />}
 
       {latest && (
         <>
-          <div className="grid gap-4 lg:grid-cols-12">
-            <Panel
-              title="Latest release"
-              description={latest.artifact_name ?? undefined}
-              className="lg:col-span-4"
-            >
-              <div className="flex flex-col items-center px-4 py-5">
-                <PostureGauge
-                  blocking={latestBlocking}
-                  total={latest.finding_count}
-                />
-                <p className="mt-3 max-w-[16rem] text-center text-xs text-content-muted">
-                  {latestBlocking === 0
-                    ? "No critical or high findings. This build clears the gate."
-                    : `${latestBlocking} finding${latestBlocking === 1 ? "" : "s"} at critical or high would block a release gated on severity.`}
-                </p>
-                <Link
-                  href={`/runs/${latest.id}`}
-                  className="mt-3 text-xs text-accent underline-offset-2 hover:underline"
-                >
-                  Inspect run →
-                </Link>
-              </div>
-            </Panel>
+          {/* The fold. One verdict, at a size that carries. */}
+          <Verdict run={latest} blocking={blocking} counts={latestCounts} />
 
-            <Panel title="Severity mix" className="lg:col-span-4">
-              <div className="flex items-center justify-center gap-6 px-4 py-5">
-                <SeverityDonut
-                  counts={latestCounts}
-                  centerValue={latest.finding_count}
-                  centerLabel="findings"
-                />
-                <div className="min-w-[7rem]">
-                  <SeverityLegend counts={latestCounts} />
-                </div>
-              </div>
-            </Panel>
+          {/* Fleet numbers on a single rule — a row of equals, because none of
+              them outranks another. */}
+          <section className="surface-panel grid gap-px overflow-hidden rounded-lg border border-border bg-border sm:grid-cols-2 lg:grid-cols-4">
+            <Stat
+              label="Would block a release"
+              value={fleetBlocking}
+              tone={fleetBlocking > 0 ? "critical" : "ok"}
+              hint={`across ${current.length} artifact${current.length === 1 ? "" : "s"}`}
+            />
+            <Stat
+              label="Introduced by a build"
+              value={newThisBuild}
+              tone={newThisBuild > 0 ? "high" : "ok"}
+              hint="what the gate fails on"
+            />
+            <Stat label="Open findings" value={fleetTotal} hint="current build of each" />
+            <Stat
+              label="Files analysed"
+              value={filesAnalysed}
+              hint={degraded > 0 ? `${degraded} run(s) failed` : "unpacked recursively"}
+              tone={degraded > 0 ? "high" : "neutral"}
+            />
+          </section>
 
-            <Panel
-              title="Trend"
-              description="Findings per completed run, oldest to newest"
-              className="lg:col-span-4"
-            >
-              <TrendBars series={trend} />
-              <div className="border-t border-border px-4 py-2 text-xs text-content-muted">
-                {latest.new_since_previous === null ? (
-                  "Baseline run — nothing to compare against yet."
-                ) : latest.new_since_previous === 0 ? (
-                  <span className="text-ok">
-                    No new findings since the previous run of this artifact.
-                  </span>
-                ) : (
-                  <span className="text-high">
-                    {latest.new_since_previous} finding
-                    {latest.new_since_previous === 1 ? "" : "s"} new since the
-                    previous run.
-                  </span>
-                )}
-              </div>
-            </Panel>
-          </div>
-
-          <div className="grid gap-4 lg:grid-cols-12">
-            <Panel
-              title="Highest exposure"
-              description="Artifacts by release-blocking findings"
-              className="lg:col-span-5"
-            >
-              {worst.length > 0 ? (
-                <BarList items={worst} />
-              ) : (
-                <p className="px-4 py-6 text-sm text-ok">
-                  No artifact currently carries a critical or high finding.
-                </p>
-              )}
-            </Panel>
-
-            <Panel
-              title="Current exposure"
-              description="Latest run of each artifact — superseded scans excluded"
-              className="lg:col-span-7"
-            >
-              <div className="flex flex-wrap items-center gap-8 px-4 py-5">
-                <SeverityDonut
-                  counts={fleetCounts}
-                  size={140}
-                  thickness={14}
-                  centerLabel="total"
-                />
-                <div className="min-w-[8rem]">
-                  <SeverityLegend counts={fleetCounts} />
-                </div>
-                <p className="max-w-xs text-xs text-content-muted">
-                  Every finding here comes from a deterministic rule. Rules that
-                  fire en masse are clustered into a single finding with all its
-                  locations, so a build that leaks 800 source paths reads as one
-                  issue rather than eight hundred.
-                </p>
-              </div>
-            </Panel>
-          </div>
+          <RunLog runs={runs} />
         </>
       )}
-
-      {runs.length > 0 && (
-        <Panel title="Runs" description="Newest first">
-          <div className="scroll-x">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border text-left text-[11px] uppercase tracking-wider text-content-subtle">
-                  <th scope="col" className="px-4 py-2 font-medium">Artifact</th>
-                  <th scope="col" className="px-4 py-2 font-medium">Status</th>
-                  <th scope="col" className="px-4 py-2 font-medium">Findings</th>
-                  <th scope="col" className="px-4 py-2 font-medium">Delta</th>
-                  <th scope="col" className="px-4 py-2 font-medium">Files</th>
-                  <th scope="col" className="px-4 py-2 font-medium">Started</th>
-                </tr>
-              </thead>
-              <tbody>
-                {runs.map((run) => (
-                  <tr
-                    key={run.id}
-                    className="border-b border-border/60 last:border-0 hover:bg-surface-sunken/60"
-                  >
-                    <td className="px-4 py-2.5">
-                      <Link
-                        href={`/runs/${run.id}`}
-                        className="font-medium underline-offset-2 hover:underline"
-                      >
-                        {run.artifact_name ?? run.id.slice(0, 8)}
-                      </Link>
-                      <div className="mt-0.5 flex items-center gap-2 text-xs text-content-subtle">
-                        <Mono title={run.artifact_sha256 ?? undefined}>
-                          {run.artifact_sha256?.slice(0, 12) ?? "—"}
-                        </Mono>
-                        <span>{bytes(run.artifact_size_bytes)}</span>
-                      </div>
-                    </td>
-                    <td className="px-4 py-2.5">
-                      <StatusDot status={run.status} />
-                      {run.error && (
-                        <div className="mt-0.5 max-w-[18rem] truncate font-mono text-xs text-critical">
-                          {run.error}
-                        </div>
-                      )}
-                    </td>
-                    <td className="px-4 py-2.5">
-                      <SeverityBar counts={run.severity_counts} total={run.finding_count} />
-                    </td>
-                    <td className="px-4 py-2.5 tnum">
-                      {run.new_since_previous === null ? (
-                        <span className="text-xs text-content-subtle">baseline</span>
-                      ) : run.new_since_previous === 0 ? (
-                        <span className="text-xs text-ok">no change</span>
-                      ) : (
-                        <span className="text-xs font-medium text-high">
-                          +{run.new_since_previous}
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-4 py-2.5 tnum text-content-muted">
-                      {run.artifact_count ?? 1}
-                    </td>
-                    <td className="px-4 py-2.5 text-content-muted">
-                      {relativeTime(run.created_at)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </Panel>
-      )}
     </div>
+  );
+}
+
+/* ------------------------------------------------------------------ verdict */
+
+function Verdict({
+  run,
+  blocking,
+  counts,
+}: {
+  run: RunSummary;
+  blocking: number;
+  counts: Partial<Record<Severity, number>>;
+}) {
+  const blocked = blocking > 0;
+
+  return (
+    <section className="surface-hero overflow-hidden rounded-xl border border-border bg-surface">
+      <div className="flex flex-col gap-8 p-7 lg:flex-row lg:items-center lg:gap-12 lg:p-9">
+        <div className="min-w-0 lg:w-[380px] lg:shrink-0">
+          <div className="flex items-center gap-2.5">
+            <span
+              className={`h-2 w-2 rounded-full ${blocked ? "bg-critical" : "bg-ok"}`}
+              aria-hidden
+            />
+            <span
+              className={`text-[10.5px] font-semibold uppercase tracking-[0.14em] ${
+                blocked ? "text-critical" : "text-ok"
+              }`}
+            >
+              Latest build
+            </span>
+          </div>
+
+          <p
+            className={`figure mt-4 text-[64px] lg:text-[76px] ${
+              blocked ? "text-critical" : "text-ok"
+            }`}
+          >
+            {blocked ? "BLOCKED" : "CLEAR"}
+          </p>
+
+          <p className="mt-4 max-w-[34ch] text-[14px] leading-relaxed text-content-muted text-pretty">
+            {blocked
+              ? `${blocking} finding${blocking === 1 ? "" : "s"} at critical or high. A release gated on severity stops here.`
+              : "Nothing at critical or high. A release gated on severity clears this build."}
+          </p>
+
+          <div className="mt-6 flex flex-wrap items-center gap-3">
+            <Link href={`/runs/${run.id}`}>
+              <Button variant="primary">Inspect run</Button>
+            </Link>
+            <Link href="/scan">
+              <Button variant="secondary">New scan</Button>
+            </Link>
+          </div>
+        </div>
+
+        {/* What the verdict is made of. */}
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1">
+            <p className="min-w-0 truncate text-[17px] font-semibold tracking-[-0.014em]">
+              {run.artifact_name ?? run.id.slice(0, 12)}
+            </p>
+            <p className="tnum font-mono text-[11.5px] text-content-subtle">
+              {run.artifact_sha256?.slice(0, 16) ?? "—"} · {bytes(run.artifact_size_bytes)} ·{" "}
+              {relativeTime(run.finished_at ?? run.created_at)}
+            </p>
+          </div>
+
+          <div className="mt-6 space-y-2.5">
+            {SEVERITY_ORDER.filter((s) => (counts[s] ?? 0) > 0).map((severity) => (
+              <SeverityRow
+                key={severity}
+                severity={severity}
+                count={counts[severity] ?? 0}
+                total={run.finding_count || 1}
+              />
+            ))}
+            {run.finding_count === 0 && (
+              <p className="text-[13px] text-content-subtle">
+                No findings. Every rule in the pack was evaluated against this artifact.
+              </p>
+            )}
+          </div>
+
+          <p className="mt-6 border-t border-border pt-4 text-[11.5px] leading-relaxed text-content-subtle text-pretty">
+            {run.new_since_previous === null
+              ? "Baseline run — nothing to compare against yet, so every finding counts as new."
+              : run.new_since_previous === 0
+                ? "Nothing new since the previous run of this artifact. Inherited findings are reported but do not block."
+                : `${run.new_since_previous} finding${run.new_since_previous === 1 ? "" : "s"} introduced by this build. The gate fails on these, not on what was inherited.`}
+          </p>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/** One severity, as a proportional bar. Reads as a distribution at a glance
+ *  without the reader decoding a legend. */
+function SeverityRow({
+  severity,
+  count,
+  total,
+}: {
+  severity: Severity;
+  count: number;
+  total: number;
+}) {
+  const pct = Math.max(2, Math.round((count / total) * 100));
+  return (
+    <div className="flex items-center gap-3">
+      <span
+        className={`w-[68px] shrink-0 text-[10px] font-semibold uppercase tracking-[0.1em] ${SEVERITY_TEXT[severity]}`}
+      >
+        {severity}
+      </span>
+      <div className="h-[7px] min-w-0 flex-1 overflow-hidden rounded-full bg-surface-inset">
+        <div
+          className={`h-full rounded-full ${SEVERITY_TEXT[severity]}`}
+          style={{ width: `${pct}%`, background: "currentColor" }}
+        />
+      </div>
+      <span className={`tnum w-9 shrink-0 text-right text-[14px] font-semibold ${SEVERITY_TEXT[severity]}`}>
+        {count}
+      </span>
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------- stats */
+
+function Stat({
+  label,
+  value,
+  hint,
+  tone = "neutral",
+}: {
+  label: string;
+  value: number;
+  hint: string;
+  tone?: "neutral" | "ok" | "high" | "critical";
+}) {
+  const toneClass = {
+    neutral: "text-content",
+    ok: "text-ok",
+    high: "text-high",
+    critical: "text-critical",
+  }[tone];
+
+  return (
+    <div className="bg-surface px-5 py-4">
+      <p className="eyebrow">{label}</p>
+      <p className={`figure mt-2.5 text-[32px] ${toneClass}`}>{value.toLocaleString()}</p>
+      <p className="mt-1.5 text-[11.5px] text-content-subtle">{hint}</p>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ run log */
+
+function RunLog({ runs }: { runs: RunSummary[] }) {
+  return (
+    <section className="surface-panel overflow-hidden rounded-lg border border-border bg-surface">
+      <header className="flex items-center justify-between border-b border-border px-5 py-3.5">
+        <h2 className="text-[13.5px] font-semibold tracking-[-0.008em]">Runs</h2>
+        <span className="tnum text-[11.5px] text-content-subtle">{runs.length} total</span>
+      </header>
+
+      <div className="scroll-x">
+        <table className="w-full min-w-[860px] border-collapse">
+          <thead>
+            <tr className="border-b border-border">
+              {["Artifact", "Status", "Findings", "Delta", "Files", "Started"].map((h, i) => (
+                <th
+                  key={h}
+                  className={`eyebrow px-5 py-2.5 font-semibold ${
+                    i > 2 ? "text-right" : "text-left"
+                  }`}
+                >
+                  {h}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {runs.map((run) => (
+              <RunRow key={run.id} run={run} />
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function RunRow({ run }: { run: RunSummary }) {
+  const blocking =
+    (run.severity_counts.critical ?? 0) + (run.severity_counts.high ?? 0);
+  const live = run.status === "running" || run.status === "queued";
+
+  const statusTone =
+    run.status === "completed"
+      ? "text-ok"
+      : run.status === "failed"
+        ? "text-critical"
+        : live
+          ? "text-accent"
+          : "text-content-subtle";
+
+  return (
+    <tr className="group border-b hairline last:border-0 transition-colors hover:bg-surface-raised">
+      {/* A severity rail rather than a coloured row: the eye finds the
+          blocking builds down the left edge without the table turning red. */}
+      <td className="relative px-5 py-3">
+        <span
+          aria-hidden
+          className={`absolute left-0 top-0 h-full w-[2px] ${
+            blocking > 0 ? "bg-critical" : "bg-transparent"
+          }`}
+        />
+        <Link href={`/runs/${run.id}`} className="block min-w-0">
+          <span className="block truncate text-[13px] font-medium group-hover:text-accent">
+            {run.artifact_name ?? run.id.slice(0, 12)}
+          </span>
+          <span className="tnum mt-0.5 block font-mono text-[10.5px] text-content-subtle">
+            {run.artifact_sha256?.slice(0, 12) ?? run.id.slice(0, 12)} ·{" "}
+            {bytes(run.artifact_size_bytes)}
+          </span>
+        </Link>
+      </td>
+
+      <td className="px-5 py-3">
+        <span className={`inline-flex items-center gap-2 text-[12px] font-medium ${statusTone}`}>
+          <span className="relative flex h-[7px] w-[7px]" aria-hidden>
+            {live && (
+              <span className="sg-pulse absolute inline-flex h-full w-full rounded-full bg-current opacity-60" />
+            )}
+            <span className="relative inline-flex h-[7px] w-[7px] rounded-full bg-current" />
+          </span>
+          {run.status}
+        </span>
+      </td>
+
+      <td className="px-5 py-3">
+        {run.finding_count > 0 ? (
+          <SeverityBar counts={run.severity_counts} />
+        ) : run.status === "completed" ? (
+          <span className="text-[12px] text-ok">clean</span>
+        ) : (
+          <span className="text-[12px] text-content-subtle">—</span>
+        )}
+      </td>
+
+      <td className="tnum px-5 py-3 text-right text-[12px]">
+        {run.new_since_previous === null ? (
+          <span className="text-content-subtle">baseline</span>
+        ) : run.new_since_previous === 0 ? (
+          <span className="text-content-subtle">no change</span>
+        ) : (
+          <span className="text-high">+{run.new_since_previous}</span>
+        )}
+      </td>
+
+      <td className="tnum px-5 py-3 text-right text-[12px] text-content-muted">
+        {(run.artifact_count ?? 1).toLocaleString()}
+      </td>
+
+      <td className="tnum px-5 py-3 text-right text-[12px] text-content-subtle">
+        {relativeTime(run.started_at ?? run.created_at)}
+      </td>
+    </tr>
+  );
+}
+
+/* ------------------------------------------------------------------- empty */
+
+function FirstRun() {
+  return (
+    <section className="surface-panel rounded-xl border border-border bg-surface px-8 py-14 text-center">
+      <p className="text-[17px] font-semibold">No scans yet</p>
+      <p className="mx-auto mt-2.5 max-w-lg text-[13.5px] leading-relaxed text-content-muted text-pretty">
+        Upload an installer, executable, archive, or firmware image. Sightglass
+        unpacks it recursively and reports the secrets, internal hostnames, and
+        build metadata baked into what you are about to ship.
+      </p>
+      <div className="mt-6 flex justify-center">
+        <Link href="/scan">
+          <Button variant="primary">Scan an artifact</Button>
+        </Link>
+      </div>
+    </section>
   );
 }

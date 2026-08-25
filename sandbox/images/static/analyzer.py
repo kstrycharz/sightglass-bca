@@ -48,6 +48,15 @@ MAX_SCAN_WORKERS = 8
 # pickling cost more than the scan.
 MIN_FILES_FOR_POOL = 8
 
+# Recon holds every extracted string in memory at once so `sweep` can rank by
+# rarity across the whole corpus. That is affordable for a 500-file tree
+# (~600k strings) and fatal for a 69 000-file one: the same installer, once its
+# Electron archive actually unpacked, produced tens of millions and OOM-killed
+# a 4 GiB analyzer 256 seconds in. The cap bounds the worst case to a few
+# hundred MB; when it bites, the result says so rather than quietly reporting a
+# partial inventory as a complete one.
+MAX_RECON_STRINGS = 3_000_000
+
 # Magic bytes are enough for S1's purposes here; full LIEF/pefile parsing lands
 # with the identify analyzer. This exists so the report can say "PE32+
 # executable" rather than "file".
@@ -510,10 +519,30 @@ def run_recon(artifacts: list[Path], *, workers: int = 1) -> Any:
         chunksize=8,
         what="recon",
     )
+
     collected: list[tuple[str, str, int, str]] = []
+    truncated = False
     for chunk in chunks:
+        if len(collected) >= MAX_RECON_STRINGS:
+            truncated = True
+            break
+        room = MAX_RECON_STRINGS - len(collected)
+        if len(chunk) > room:
+            collected.extend(chunk[:room])
+            truncated = True
+            break
         collected.extend(chunk)
-    return sweep(collected)
+
+    if truncated:
+        print(
+            f"recon sampled the first {len(collected):,} strings "
+            f"({MAX_RECON_STRINGS:,} cap); the inventory is partial",
+            file=sys.stderr,
+        )
+
+    inventory = sweep(collected)
+    inventory.truncated = truncated
+    return inventory
 
 
 if __name__ == "__main__":

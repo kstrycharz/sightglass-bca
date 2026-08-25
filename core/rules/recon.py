@@ -133,9 +133,17 @@ class ReconInventory:
     categories: list[ReconCategory] = field(default_factory=list)
     files_scanned: int = 0
 
+    truncated: bool = False
+    """The string corpus was sampled rather than exhausted.
+
+    Rarity is the ranking signal, and rarity computed over a sample is a
+    weaker claim than rarity computed over everything. A partial inventory
+    presented as a complete one is the failure this flag exists to prevent."""
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "files_scanned": self.files_scanned,
+            "truncated": self.truncated,
             "categories": [c.to_dict() for c in self.categories],
         }
 

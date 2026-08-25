@@ -2,10 +2,10 @@
 
 /* Design tokens.
  *
- * DARK FIRST. A security console is read for hours in a dim room, often on a
- * wall display, and the artifact under inspection is hostile — the interface
- * should recede and let severity be the only thing that shouts. Light is still
- * supported and switches on `prefers-color-scheme: light`.
+ * DARK, UNCONDITIONALLY. A security console is read for hours in a dim room,
+ * often on a wall display, and the artifact under inspection is hostile — the
+ * interface should recede and let severity be the only thing that shouts. See
+ * the note below the palette for why there is no light variant.
  *
  * The palette is near-monochrome, with colour reserved almost entirely for
  * severity. If everything is coloured, severity stops being visible, which is
@@ -14,13 +14,10 @@
  * Semantic names, not literal ones: the PDF print stylesheet and customer
  * theming (M4) override these in one place rather than by hunting components.
  *
- * IMPORTANT — how theming works here. `@theme` must be top level in Tailwind
- * v4; it is a build-time construct that registers tokens and generates utility
- * classes. Nesting it inside a media query does NOT scope it — Tailwind
- * flattens it and those values silently become the *only* definition. So the
- * default (dark) palette is declared once in `@theme`, and the light palette
- * overrides the same CSS variables through an ordinary `:root` rule below.
- * Utilities reference `var(--color-*)`, so they follow the override for free.
+ * `@theme` must be top level in Tailwind v4 — it is a build-time construct
+ * that registers tokens and generates utility classes, and nesting it inside a
+ * media query does not scope it. Utilities reference `var(--color-*)`, so any
+ * runtime override of these variables is followed for free.
  */
 @theme {
   /* Surfaces. Four steps, not three: a console needs a page floor, a card, a
@@ -70,57 +67,92 @@
   --radius-sm: 5px;
   --radius-md: 7px;
   --radius-lg: 10px;
+  --radius-xl: 14px;
 }
 
-/* Light palette. Same token names, so no utility class changes. */
-@media (prefers-color-scheme: light) {
-  :root {
-    --color-surface: oklch(1 0 0);
-    --color-surface-raised: oklch(0.988 0.001 265);
-    --color-surface-sunken: oklch(0.972 0.002 265);
-    --color-surface-inset: oklch(0.955 0.003 265);
+/* Depth.
+ *
+ * A flat surface with a 1px border is what "cheap" looks like: every plane at
+ * the same distance, nothing catching light. Real materials have an edge that
+ * takes the light from above and a shadow that sits under them.
+ *
+ * Two devices, both restrained. A one-pixel inset highlight along the top edge
+ * reads as a bevel catching a light source; a soft shadow underneath separates
+ * the plane from the page. Neither is visible as an effect — you notice them
+ * only if you remove them.
+ */
+:root {
+  --edge-light: inset 0 1px 0 0 oklch(1 0 0 / 0.055);
+  --edge-light-strong: inset 0 1px 0 0 oklch(1 0 0 / 0.09);
 
-    --color-border: oklch(0.912 0.004 265);
-    --color-border-strong: oklch(0.842 0.006 265);
-
-    --color-content: oklch(0.205 0.006 265);
-    --color-content-muted: oklch(0.475 0.008 265);
-    --color-content-subtle: oklch(0.615 0.008 265);
-
-    --color-accent: oklch(0.515 0.16 254);
-    --color-accent-muted: oklch(0.948 0.022 254);
-    --color-accent-contrast: oklch(1 0 0);
-
-    --color-critical: oklch(0.525 0.222 22);
-    --color-critical-bg: oklch(0.965 0.022 22);
-    --color-high: oklch(0.545 0.162 58);
-    --color-high-bg: oklch(0.968 0.024 58);
-    --color-medium: oklch(0.545 0.112 92);
-    --color-medium-bg: oklch(0.972 0.028 92);
-    --color-low: oklch(0.545 0.102 236);
-    --color-low-bg: oklch(0.968 0.02 236);
-    --color-info: oklch(0.545 0.02 265);
-    --color-info-bg: oklch(0.964 0.003 265);
-
-    --color-ok: oklch(0.515 0.132 156);
-    --color-ok-bg: oklch(0.964 0.022 156);
-  }
+  --shadow-raised: 0 1px 2px oklch(0 0 0 / 0.28), 0 2px 6px oklch(0 0 0 / 0.16);
+  --shadow-panel: 0 1px 3px oklch(0 0 0 / 0.24), 0 8px 24px -8px oklch(0 0 0 / 0.3);
+  --shadow-hero: 0 2px 4px oklch(0 0 0 / 0.26), 0 18px 48px -18px oklch(0 0 0 / 0.45);
 }
+
+.surface-panel {
+  box-shadow: var(--edge-light), var(--shadow-panel);
+}
+
+.surface-hero {
+  box-shadow: var(--edge-light-strong), var(--shadow-hero);
+}
+
+.surface-raised {
+  box-shadow: var(--edge-light), var(--shadow-raised);
+}
+
+/* There is no light palette, and that is a decision rather than an omission.
+ *
+ * This console is dark unconditionally — not `prefers-color-scheme` dark,
+ * which is what it was, and which meant an operator on a light desktop saw a
+ * white console that looked nothing like the product we designed. Severity is
+ * the only saturated colour here, and it only reads as an alarm against a dark
+ * ground; on white, `medium` amber and `low` blue wash out into decoration.
+ *
+ * Wall displays, dim SOC rooms and long sessions all point the same way, and
+ * every tool this sits beside made the same call. If a light theme is ever
+ * wanted it belongs behind an explicit user setting stamped on <html>, never
+ * behind a system preference that silently changes what the product looks
+ * like.
+ */
 
 :root {
-  color-scheme: dark light;
+  color-scheme: dark;
 }
 
 html,
 body {
-  background: var(--color-surface-sunken);
+  background-color: var(--color-surface-sunken);
   color: var(--color-content);
+}
+
+/* The page floor is not a flat fill. A very slight lift behind the content
+   stops a full-screen dark background reading as an unlit void, which is the
+   other half of why flat dark UIs look cheap.
+
+   `background-color` above, `background-image` here: the `background`
+   shorthand would reset one with the other, and did. */
+body {
+  background-image: radial-gradient(
+    120rem 60rem at 50% -18rem,
+    oklch(0.235 0.014 262 / 0.6),
+    transparent 68%
+  );
+  background-attachment: fixed;
 }
 
 body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   font-feature-settings: "cv02", "cv03", "cv04", "ss01";
+}
+
+/* Hairlines. A border strong enough to see on every edge turns a dense
+   console into a grid of boxes. These are the separators inside a panel,
+   where structure should be felt rather than drawn. */
+.hairline {
+  border-color: oklch(1 0 0 / 0.055);
 }
 
 /* Numbers in tables must line up: offsets, sizes, counts, durations. */

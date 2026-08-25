@@ -126,7 +126,7 @@ export function Panel({
 }) {
   return (
     <section
-      className={`overflow-hidden rounded-lg border border-border bg-surface ${className}`}
+      className={`surface-panel overflow-hidden rounded-lg border border-border bg-surface ${className}`}
     >
       {(title || actions) && (
         <header className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-border px-4 py-3">
@@ -168,7 +168,7 @@ export function Metric({
           ? "text-critical"
           : "text-content";
   return (
-    <div className="rounded-lg border border-border bg-surface px-4 py-3.5">
+    <div className="surface-panel rounded-lg border border-border bg-surface px-4 py-3.5">
       <div className="eyebrow">{label}</div>
       <div className={`figure mt-2 text-[26px] ${toneClass}`}>{value}</div>
       {hint && (
@@ -203,9 +203,9 @@ export function Button({
 }) {
   const styles = {
     primary:
-      "bg-accent text-accent-contrast border-transparent hover:brightness-110 font-semibold",
+      "surface-raised bg-accent text-accent-contrast border-transparent hover:brightness-110 font-semibold",
     secondary:
-      "bg-surface-raised text-content border-border-strong hover:bg-surface-raised hover:border-content-subtle",
+      "surface-raised bg-surface-raised text-content border-border-strong hover:border-content-subtle",
     ghost:
       "bg-transparent text-content-muted border-transparent hover:bg-surface-raised hover:text-content",
   }[variant];
