@@ -58,7 +58,16 @@ def create_celery() -> Celery:
                 "task": "sightglass.reap_containers",
                 "schedule": float(settings.reaper_interval_seconds),
                 "options": {"queue": QUEUE_CONTROL, "expires": 120},
-            }
+            },
+            # The counterpart to task_reject_on_worker_lost=False above: that
+            # setting refuses to retry a lost task, and this decides what
+            # becomes of the run instead. Without it a scan queued during a
+            # worker restart is orphaned at `queued` for ever.
+            "recover-orphaned-runs": {
+                "task": "sightglass.recover_orphaned_runs",
+                "schedule": float(settings.orphan_sweep_interval_seconds),
+                "options": {"queue": QUEUE_CONTROL, "expires": 120},
+            },
         },
     )
     # Lazy on purpose: `force=True` imports core.orchestrator.tasks while this

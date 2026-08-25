@@ -26,6 +26,7 @@ log = structlog.get_logger(__name__)
 __all__ = [
     "discover_rules_task",
     "reap_containers",
+    "recover_orphaned_runs",
     "sandbox_smoke_test",
     "scan_run",
     "triage_run_task",
@@ -75,6 +76,51 @@ def reap_containers() -> dict[str, Any]:
         "removed": report.removed_count,
         "failed": len(report.failed),
     }
+
+
+@celery_app.task(name="sightglass.recover_orphaned_runs", queue=QUEUE_CONTROL)
+def recover_orphaned_runs() -> dict[str, Any]:
+    """Periodic sweep for runs whose Celery task was lost.
+
+    The counterpart to `task_reject_on_worker_lost=False`: that setting stops a
+    lost task being retried onto another worker, and this decides what happens
+    to the run instead. Without it a scan queued during a worker restart sits
+    at `queued` for ever with no error — observed on a 203 MB installer during
+    a routine redeploy.
+
+    Requeueing happens here rather than in the sweep so the broker stays the
+    task's concern and `core.pipeline.recovery` stays testable without one.
+    """
+    settings = get_settings()
+    from core.db import session_scope
+    from core.pipeline.recovery import sweep_orphaned_runs
+
+    try:
+        with session_scope() as session:
+            sweep = sweep_orphaned_runs(
+                session,
+                queued_grace_s=settings.orphan_queued_grace_seconds,
+                running_timeout_s=settings.orphan_running_timeout_seconds,
+                max_requeue_attempts=settings.orphan_max_requeue_attempts,
+            )
+            report = sweep.to_dict()
+            requeue = list(sweep.requeued)
+    except Exception as exc:
+        # A failing sweep must not crash beat; it runs again next interval.
+        log.warning("recovery.sweep_failed", error=str(exc))
+        return {"inspected": 0, "requeued": [], "failed": [], "error": str(exc)}
+
+    # Dispatch only after the transaction committed, so a run can never be
+    # re-dispatched against an audit entry that was rolled back.
+    for run_id in requeue:
+        try:
+            scan_run.delay(run_id)
+        except Exception as exc:
+            log.warning("recovery.redispatch_failed", run_id=run_id, error=str(exc))
+
+    if report["requeued"] or report["failed"]:
+        log.info("recovery.sweep", **report)
+    return report
 
 
 @celery_app.task(name="sightglass.sandbox_smoke_test", queue=QUEUE_CONTROL)

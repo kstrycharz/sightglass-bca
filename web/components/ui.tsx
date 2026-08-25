@@ -28,9 +28,13 @@ export function SeverityTag({
 }) {
   return (
     <span
-      className={`inline-flex shrink-0 items-center rounded border font-medium uppercase tracking-wider ${
+      className={`inline-flex shrink-0 items-center justify-center rounded-sm border font-semibold uppercase tracking-[0.09em] ${
         SEVERITY_STYLE[severity]
-      } ${size === "xs" ? "px-1 py-px text-[10px]" : "px-1.5 py-0.5 text-[11px]"}`}
+      } ${
+        size === "xs"
+          ? "px-1.5 py-px text-[9.5px]"
+          : "min-w-[62px] px-2 py-[3px] text-[10px]"
+      }`}
     >
       {severity}
     </span>
@@ -90,14 +94,16 @@ export function StatusDot({ status, label }: { status: string; label?: string })
   const active = status === "running" || status === "queued";
   return (
     <span
-      className={`inline-flex items-center gap-1.5 text-sm ${
+      className={`inline-flex items-center gap-2 text-[12.5px] font-medium ${
         STATUS_STYLE[status] ?? "text-content-muted"
       }`}
     >
-      <span
-        className={`h-1.5 w-1.5 shrink-0 rounded-full bg-current ${active ? "animate-pulse" : ""}`}
-        aria-hidden
-      />
+      <span className="relative flex h-[7px] w-[7px] shrink-0" aria-hidden>
+        {active && (
+          <span className="sg-pulse absolute inline-flex h-full w-full rounded-full bg-current opacity-60" />
+        )}
+        <span className="relative inline-flex h-[7px] w-[7px] rounded-full bg-current" />
+      </span>
       {label ?? status}
     </span>
   );
@@ -120,14 +126,18 @@ export function Panel({
 }) {
   return (
     <section
-      className={`rounded-lg border border-border bg-surface shadow-[0_1px_2px_rgba(0,0,0,0.03)] ${className}`}
+      className={`overflow-hidden rounded-lg border border-border bg-surface ${className}`}
     >
       {(title || actions) && (
         <header className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-border px-4 py-3">
           <div className="min-w-0">
-            {title && <h2 className="text-sm font-semibold">{title}</h2>}
+            {title && (
+              <h2 className="text-[13.5px] font-semibold tracking-[-0.008em]">{title}</h2>
+            )}
             {description && (
-              <p className="mt-0.5 text-xs text-content-muted">{description}</p>
+              <p className="mt-0.5 text-[11.5px] leading-relaxed text-content-subtle">
+                {description}
+              </p>
             )}
           </div>
           {actions && <div className="ml-auto flex items-center gap-2">{actions}</div>}
@@ -158,12 +168,12 @@ export function Metric({
           ? "text-critical"
           : "text-content";
   return (
-    <div className="rounded-lg border border-border bg-surface px-4 py-3">
-      <div className="text-[11px] font-medium uppercase tracking-wider text-content-subtle">
-        {label}
-      </div>
-      <div className={`mt-1 text-xl font-semibold tnum ${toneClass}`}>{value}</div>
-      {hint && <div className="mt-0.5 text-xs text-content-muted">{hint}</div>}
+    <div className="rounded-lg border border-border bg-surface px-4 py-3.5">
+      <div className="eyebrow">{label}</div>
+      <div className={`figure mt-2 text-[26px] ${toneClass}`}>{value}</div>
+      {hint && (
+        <div className="mt-1.5 text-[11.5px] leading-relaxed text-content-subtle">{hint}</div>
+      )}
     </div>
   );
 }
@@ -193,16 +203,17 @@ export function Button({
 }) {
   const styles = {
     primary:
-      "bg-content text-surface hover:opacity-90 border-transparent",
+      "bg-accent text-accent-contrast border-transparent hover:brightness-110 font-semibold",
     secondary:
-      "bg-surface text-content border-border hover:bg-surface-raised",
-    ghost: "bg-transparent text-content-muted border-transparent hover:text-content",
+      "bg-surface-raised text-content border-border-strong hover:bg-surface-raised hover:border-content-subtle",
+    ghost:
+      "bg-transparent text-content-muted border-transparent hover:bg-surface-raised hover:text-content",
   }[variant];
 
   return (
     <button
       {...props}
-      className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${styles} ${
+      className={`inline-flex h-[32px] items-center gap-1.5 rounded-md border px-3.5 text-[13px] font-medium transition-all disabled:cursor-not-allowed disabled:opacity-40 ${styles} ${
         props.className ?? ""
       }`}
     >

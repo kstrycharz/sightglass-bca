@@ -33,13 +33,27 @@ class StageStatus(StrEnum):
     TIMEOUT = "timeout"
     OOM = "oom"
     FAILED = "failed"
+    TRUNCATED = "truncated"
+    """An extraction budget was hit, so part of the artifact was never opened.
+
+    Its own status rather than a flavour of `completed`, because the gate reads
+    `is_degraded` to decide whether a scan can support a PASS — and a partial
+    tree cannot. Found in the field: a 213 MB installer truncated at 20 000
+    files still returned `completed`, and the gate passed a build whose
+    application code had never been unpacked."""
+
     SKIPPED = "skipped"
 
     @property
     def is_degraded(self) -> bool:
         """Degraded stages still let the run finish, but the report must say so
         rather than implying the artifact was clean."""
-        return self in (StageStatus.TIMEOUT, StageStatus.OOM, StageStatus.FAILED)
+        return self in (
+            StageStatus.TIMEOUT,
+            StageStatus.OOM,
+            StageStatus.FAILED,
+            StageStatus.TRUNCATED,
+        )
 
 
 class FindingStatus(StrEnum):
@@ -109,6 +123,14 @@ class AuditAction(StrEnum):
     LLM_CALL = "llm_call"
     EXPORT = "export"
     CONFIG_CHANGED = "config_changed"
+    RUN_REQUEUED = "run_requeued"
+    """A queued run whose Celery task was lost, re-dispatched by the recovery
+    sweep. Counted from this log rather than a column, so the trail an operator
+    reads is the same one the sweep reasons about."""
+
+    RUN_ORPHANED = "run_orphaned"
+    """A run failed because its task was lost and could not be recovered."""
+
     TOKEN_CREATED = "token_created"
     TOKEN_REVOKED = "token_revoked"
     AUTH_FAILED = "auth_failed"

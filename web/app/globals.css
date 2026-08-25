@@ -2,91 +2,113 @@
 
 /* Design tokens.
  *
- * A security console is read for hours at a time by people scanning for the
- * one row that matters. The palette is therefore near-monochrome, with colour
- * reserved almost entirely for severity — if everything is coloured, severity
- * stops being visible, which is the one thing that must never happen here.
+ * DARK FIRST. A security console is read for hours in a dim room, often on a
+ * wall display, and the artifact under inspection is hostile — the interface
+ * should recede and let severity be the only thing that shouts. Light is still
+ * supported and switches on `prefers-color-scheme: light`.
+ *
+ * The palette is near-monochrome, with colour reserved almost entirely for
+ * severity. If everything is coloured, severity stops being visible, which is
+ * the one thing that must never happen here.
  *
  * Semantic names, not literal ones: the PDF print stylesheet and customer
  * theming (M4) override these in one place rather than by hunting components.
  *
- * IMPORTANT — how dark mode works here. `@theme` must be top level in Tailwind
+ * IMPORTANT — how theming works here. `@theme` must be top level in Tailwind
  * v4; it is a build-time construct that registers tokens and generates utility
- * classes. Nesting it inside `@media (prefers-color-scheme: dark)` does NOT
- * scope it to that media query — Tailwind flattens it and the dark values
- * silently become the *only* definition, so the light palette never renders
- * and the user's system preference is ignored. Instead the light palette is
- * declared once in `@theme`, and dark mode overrides the same CSS variables
- * through an ordinary `:root` rule below. Utilities reference
- * `var(--color-*)`, so they follow the override at runtime for free.
+ * classes. Nesting it inside a media query does NOT scope it — Tailwind
+ * flattens it and those values silently become the *only* definition. So the
+ * default (dark) palette is declared once in `@theme`, and the light palette
+ * overrides the same CSS variables through an ordinary `:root` rule below.
+ * Utilities reference `var(--color-*)`, so they follow the override for free.
  */
 @theme {
-  --color-surface: oklch(1 0 0);
-  --color-surface-raised: oklch(0.985 0.001 265);
-  --color-surface-sunken: oklch(0.968 0.002 265);
-  --color-border: oklch(0.915 0.004 265);
-  --color-border-strong: oklch(0.845 0.006 265);
+  /* Surfaces. Four steps, not three: a console needs a page floor, a card, a
+     raised control and a recessed well, or everything reads as one plane. */
+  --color-surface: oklch(0.196 0.006 265);
+  --color-surface-raised: oklch(0.238 0.007 265);
+  --color-surface-sunken: oklch(0.152 0.005 265);
+  --color-surface-inset: oklch(0.128 0.004 265);
 
-  --color-content: oklch(0.21 0.006 265);
-  --color-content-muted: oklch(0.48 0.008 265);
-  --color-content-subtle: oklch(0.62 0.008 265);
+  --color-border: oklch(0.292 0.008 265);
+  --color-border-strong: oklch(0.392 0.011 265);
 
-  --color-accent: oklch(0.52 0.16 258);
-  --color-accent-muted: oklch(0.95 0.02 258);
+  --color-content: oklch(0.965 0.002 265);
+  --color-content-muted: oklch(0.735 0.008 265);
+  --color-content-subtle: oklch(0.572 0.009 265);
 
-  --color-critical: oklch(0.53 0.22 25);
-  --color-critical-bg: oklch(0.965 0.02 25);
-  --color-high: oklch(0.55 0.16 55);
-  --color-high-bg: oklch(0.968 0.022 55);
-  --color-medium: oklch(0.55 0.11 85);
-  --color-medium-bg: oklch(0.972 0.026 90);
-  --color-low: oklch(0.55 0.1 235);
-  --color-low-bg: oklch(0.968 0.018 235);
-  --color-info: oklch(0.55 0.02 265);
-  --color-info-bg: oklch(0.965 0.003 265);
+  --color-accent: oklch(0.73 0.145 254);
+  --color-accent-muted: oklch(0.305 0.06 254);
+  --color-accent-contrast: oklch(0.16 0.01 265);
 
-  --color-ok: oklch(0.52 0.13 155);
-  --color-ok-bg: oklch(0.965 0.02 155);
+  /* Severity. The only saturated colour in the product. Hues are spread far
+     enough apart to survive both a projector and a colour-vision deficiency;
+     lightness is held near-constant so no severity looks louder than its rank
+     for reasons of luminance alone. */
+  --color-critical: oklch(0.712 0.196 22);
+  --color-critical-bg: oklch(0.278 0.075 22);
+  --color-high: oklch(0.775 0.155 58);
+  --color-high-bg: oklch(0.292 0.062 58);
+  --color-medium: oklch(0.828 0.135 92);
+  --color-medium-bg: oklch(0.298 0.055 92);
+  --color-low: oklch(0.748 0.108 236);
+  --color-low-bg: oklch(0.272 0.05 236);
+  --color-info: oklch(0.7 0.02 265);
+  --color-info-bg: oklch(0.252 0.006 265);
 
-  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", Menlo,
-    Consolas, monospace;
+  --color-ok: oklch(0.752 0.142 156);
+  --color-ok-bg: oklch(0.262 0.052 156);
+
+  /* Typography. IBM Plex is technical without being a cliché, and its mono
+     shares metrics and vocabulary with the sans — which matters in a UI where
+     hashes and prose sit on the same line. Self-hosted by next/font: this
+     product runs air-gapped, so a runtime request to a font CDN would both
+     fail and leak. */
+  --font-sans: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, "SF Mono", Menlo, monospace;
+
+  --radius-sm: 5px;
+  --radius-md: 7px;
+  --radius-lg: 10px;
 }
 
-/* Dark palette. A plain custom-property override, not a second `@theme` —
-   see the note above. Same token names, so no utility class changes. */
-@media (prefers-color-scheme: dark) {
+/* Light palette. Same token names, so no utility class changes. */
+@media (prefers-color-scheme: light) {
   :root {
-    --color-surface: oklch(0.185 0.005 265);
-    --color-surface-raised: oklch(0.225 0.006 265);
-    --color-surface-sunken: oklch(0.145 0.005 265);
-    --color-border: oklch(0.3 0.008 265);
-    --color-border-strong: oklch(0.4 0.01 265);
+    --color-surface: oklch(1 0 0);
+    --color-surface-raised: oklch(0.988 0.001 265);
+    --color-surface-sunken: oklch(0.972 0.002 265);
+    --color-surface-inset: oklch(0.955 0.003 265);
 
-    --color-content: oklch(0.95 0.002 265);
-    --color-content-muted: oklch(0.72 0.008 265);
-    --color-content-subtle: oklch(0.57 0.008 265);
+    --color-border: oklch(0.912 0.004 265);
+    --color-border-strong: oklch(0.842 0.006 265);
 
-    --color-accent: oklch(0.72 0.14 258);
-    --color-accent-muted: oklch(0.3 0.055 258);
+    --color-content: oklch(0.205 0.006 265);
+    --color-content-muted: oklch(0.475 0.008 265);
+    --color-content-subtle: oklch(0.615 0.008 265);
 
-    --color-critical: oklch(0.72 0.19 25);
-    --color-critical-bg: oklch(0.29 0.07 25);
-    --color-high: oklch(0.76 0.15 55);
-    --color-high-bg: oklch(0.3 0.06 55);
-    --color-medium: oklch(0.8 0.13 90);
-    --color-medium-bg: oklch(0.31 0.05 90);
-    --color-low: oklch(0.74 0.11 235);
-    --color-low-bg: oklch(0.28 0.05 235);
-    --color-info: oklch(0.7 0.02 265);
-    --color-info-bg: oklch(0.26 0.005 265);
+    --color-accent: oklch(0.515 0.16 254);
+    --color-accent-muted: oklch(0.948 0.022 254);
+    --color-accent-contrast: oklch(1 0 0);
 
-    --color-ok: oklch(0.74 0.14 155);
-    --color-ok-bg: oklch(0.27 0.05 155);
+    --color-critical: oklch(0.525 0.222 22);
+    --color-critical-bg: oklch(0.965 0.022 22);
+    --color-high: oklch(0.545 0.162 58);
+    --color-high-bg: oklch(0.968 0.024 58);
+    --color-medium: oklch(0.545 0.112 92);
+    --color-medium-bg: oklch(0.972 0.028 92);
+    --color-low: oklch(0.545 0.102 236);
+    --color-low-bg: oklch(0.968 0.02 236);
+    --color-info: oklch(0.545 0.02 265);
+    --color-info-bg: oklch(0.964 0.003 265);
+
+    --color-ok: oklch(0.515 0.132 156);
+    --color-ok-bg: oklch(0.964 0.022 156);
   }
 }
 
 :root {
-  color-scheme: light dark;
+  color-scheme: dark light;
 }
 
 html,
@@ -97,7 +119,8 @@ body {
 
 body {
   -webkit-font-smoothing: antialiased;
-  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "cv02", "cv03", "cv04", "ss01";
 }
 
 /* Numbers in tables must line up: offsets, sizes, counts, durations. */
@@ -105,16 +128,36 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* The section label used throughout the console. Small, wide, quiet — it
+   names a region without competing with the data inside it. */
+.eyebrow {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.115em;
+  text-transform: uppercase;
+  color: var(--color-content-subtle);
+}
+
+/* A number meant to be read across a room. Tight tracking stops large
+   figures drifting apart; tabular figures stop them jittering on refresh. */
+.figure {
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+  letter-spacing: -0.032em;
+  line-height: 0.95;
+}
+
 /* Focus visible everywhere — this console is navigated from the keyboard.
    AppSec engineers live in j/k/x/e. */
 :focus-visible {
   outline: 2px solid var(--color-accent);
   outline-offset: 2px;
-  border-radius: 2px;
+  border-radius: 3px;
 }
 
 ::selection {
   background: var(--color-accent-muted);
+  color: var(--color-content);
 }
 
 /* Wide content scrolls inside its own container; the page never scrolls
@@ -122,6 +165,26 @@ body {
 .scroll-x {
   overflow-x: auto;
   overscroll-behavior-x: contain;
+}
+
+/* A console shows long tables. The default scrollbar on a dark surface is a
+   bright slab that draws the eye away from the data. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-strong) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--color-border-strong);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 /* Form controls follow the palette rather than the browser default, which
@@ -134,4 +197,25 @@ input,
 textarea,
 select {
   color: var(--color-content);
+}
+
+/* A live scan is the one place motion belongs: it says work is happening.
+   Everything else in the console holds still. */
+@keyframes sg-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.sg-pulse {
+  animation: sg-pulse 1.8s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sg-pulse {
+    animation: none;
+  }
 }

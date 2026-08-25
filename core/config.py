@@ -83,6 +83,24 @@ class Settings(BaseSettings):
     reaper_max_age_hours: int = 6
     reaper_interval_seconds: int = 300
 
+    orphan_sweep_interval_seconds: int = 120
+    orphan_queued_grace_seconds: int = 300
+    """How long a run may sit queued before it is treated as orphaned.
+
+    Long enough that a busy queue is never mistaken for a broken one, short
+    enough that a lost run surfaces within a coffee break."""
+
+    orphan_running_timeout_seconds: int = 3600
+    """How long a run may stay `running` before it is failed.
+
+    Must exceed every stage timeout with room to spare (unpack 900s + static
+    1800s), so a legitimately slow scan of a large installer is never killed by
+    the sweep."""
+
+    orphan_max_requeue_attempts: int = 2
+    """After this many requeues the problem is not transient, and the run is
+    failed with a diagnosis rather than reappearing in the queue for ever."""
+
     # --- trust boundary ---------------------------------------------------
     auth_required: bool = True
     """Whether the API demands a token.

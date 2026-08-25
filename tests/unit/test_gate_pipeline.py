@@ -283,3 +283,30 @@ def test_resolve_baseline_with_supplied_ids(session: Session) -> None:
     baseline = resolve_baseline(session, run, baseline_finding_ids=frozenset({"x"}))
     assert baseline.source == "supplied_ids"
     assert baseline.finding_ids == frozenset({"x"})
+
+
+def test_truncated_extraction_makes_the_verdict_inconclusive(session: Session) -> None:
+    """A partial tree cannot support a PASS.
+
+    Found in the field: a 213 MB NVIDIA installer hit the 20 000-file
+    extraction budget six seconds in, leaving its 376 MB `app.asar` — the
+    application's own code — never opened. The stage recorded the reason in
+    `error` but reported COMPLETED, so the gate never saw it and passed the
+    build. ADR-0018 exists precisely to stop that.
+    """
+    _make_run(session, "run-1")
+    session.add(
+        RunStage(
+            id="stage-1",
+            run_id="run-1",
+            artifact_id="art-run-1",
+            analyzer="unpack",
+            status=StageStatus.TRUNCATED,
+            error="file count would exceed max_files 20000",
+        )
+    )
+    session.flush()
+
+    verdict, _ = gate_run(session, "run-1", Policy())
+    assert verdict.decision is GateDecision.INCONCLUSIVE
+    assert verdict.degraded_stages == ("unpack (truncated)",)

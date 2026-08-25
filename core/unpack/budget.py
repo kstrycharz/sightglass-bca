@@ -16,6 +16,12 @@ from dataclasses import dataclass, field
 
 DEFAULT_MAX_DEPTH = 8
 DEFAULT_MAX_FILES = 20_000
+# Scaled per MB of input, with the ceiling below. A modern Electron app ships
+# a node_modules tree of 50-100k tiny files, and a flat 20k cap truncated a
+# 213 MB NVIDIA installer six seconds in — leaving its 376 MB app.asar, where
+# the application's own code lives, entirely unopened.
+FILES_PER_INPUT_MB = 600
+MAX_FILES_CEILING = 250_000
 DEFAULT_MAX_TOTAL_BYTES = 10 * 1024**3
 DEFAULT_EXPANSION_FACTOR = 20
 # Files smaller than this are not worth recursing into, and a bomb made of
@@ -58,7 +64,18 @@ class ExtractionBudget:
         text config can honestly expand tenfold.
         """
         scaled = max(input_size_bytes * DEFAULT_EXPANSION_FACTOR, 64 * 1024 * 1024)
-        budget = cls(max_total_bytes=min(scaled, DEFAULT_MAX_TOTAL_BYTES))
+
+        # The file cap scales too. Bytes are the bomb defence — a bomb is
+        # measured in what it writes — while the file cap guards against inode
+        # exhaustion from millions of tiny entries. Holding it flat while the
+        # byte cap scales just truncates large, legitimate artifacts.
+        input_mb = max(input_size_bytes // (1024 * 1024), 1)
+        files = max(DEFAULT_MAX_FILES, min(input_mb * FILES_PER_INPUT_MB, MAX_FILES_CEILING))
+
+        budget = cls(
+            max_total_bytes=min(scaled, DEFAULT_MAX_TOTAL_BYTES),
+            max_files=files,
+        )
         for key, value in overrides.items():
             setattr(budget, key, value)
         return budget

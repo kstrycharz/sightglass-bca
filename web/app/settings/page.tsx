@@ -1,5 +1,6 @@
 import { api, type LlmSettings } from "@/lib/api";
 import { ErrorNotice, Mono, Panel } from "@/components/ui";
+import { LlmControls } from "@/components/llm-controls";
 
 export const dynamic = "force-dynamic";
 
@@ -24,6 +25,8 @@ export default async function SettingsPage() {
       </header>
 
       {error && <ErrorNotice title="Could not load LLM settings" detail={error} />}
+
+      {settings && <LlmControls settings={settings} />}
 
       {settings && (
         <>

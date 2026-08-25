@@ -231,16 +231,38 @@ class TestRejectsMatching:
             matches = scan_bytes(sample, _only(pack, "scm-url"))
             assert matches == [], f"{sample!r} should not be an SCM disclosure"
 
-    def test_internal_scm_hosts_still_match(self, pack: RulePack) -> None:
+    def test_credentialed_scm_hosts_still_match(self, pack: RulePack) -> None:
         """The exclusion must not hollow the rule out."""
         internal = [
             b"ssh://git@gitlab.internal.example.com:2222/firmware/bootloader.git",
             b"svn+ssh://delinux03.de.moog.com/data/svn/nvce/tags/B99133",
-            b"https://git.corp.example.net/scm/platform/service.git",
         ]
         for sample in internal:
             matches = scan_bytes(sample, _only(pack, "scm-url"))
             assert matches, f"{sample!r} is internal disclosure and must match"
+
+    def test_unauthenticated_repo_urls_are_a_separate_low_rule(self, pack: RulePack) -> None:
+        """The split that stops a citation blocking a release.
+
+        `scm-url` is about hosts that expect credentials. An http(s) repository
+        path is overwhelmingly a citation — license files and vendored sources
+        are full of them — so it is reported at low severity by
+        `scm-repository-reference` and never blocks a release on its own.
+        """
+        sample = b"https://git.corp.example.net/scm/platform/service.git"
+        assert scan_bytes(sample, _only(pack, "scm-url")) == []
+        assert scan_bytes(sample, _only(pack, "scm-repository-reference"))
+
+    def test_vendored_third_party_urls_do_not_block(self, pack: RulePack) -> None:
+        """Observed nine times at high on a shipped NVIDIA installer, from
+        ffmpeg and v4l-utils homepages in a Chromium license file."""
+        for sample in (
+            b"https://git.ffmpeg.org/ffmpeg.git",
+            b"http://marijnhaverbeke.nl/git/acorn",
+            b"git://github.com/dotnet/runtime",
+        ):
+            blocking = scan_bytes(sample, _only(pack, "scm-url"))
+            assert blocking == [], f"{sample!r} must not be a high-severity finding"
 
     def test_gate_is_applied_by_accepts(self) -> None:
         import re as _re

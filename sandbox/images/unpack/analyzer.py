@@ -69,7 +69,12 @@ def find_artifact() -> Path | None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Sightglass unpack analyzer")
     parser.add_argument("--max-depth", type=int, default=8)
-    parser.add_argument("--max-files", type=int, default=20_000)
+    parser.add_argument(
+        "--max-files",
+        type=int,
+        default=0,
+        help="0 scales the cap to the input size; anything else is a hard override",
+    )
     parser.add_argument(
         "--max-total-bytes",
         type=int,
@@ -85,7 +90,13 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     size = artifact.stat().st_size
-    budget = ExtractionBudget.for_input(size, max_depth=args.max_depth, max_files=args.max_files)
+    # Only pass an override when one was actually given. Passing the flag's
+    # default clobbered the scaled value — `for_input` computed 121 800 files
+    # for a 213 MB installer and then had 20 000 written straight back over it,
+    # which is how that installer's 377 MB app.asar went unopened.
+    budget = ExtractionBudget.for_input(size, max_depth=args.max_depth)
+    if args.max_files:
+        budget.max_files = args.max_files
     if args.max_total_bytes:
         budget.max_total_bytes = args.max_total_bytes
 

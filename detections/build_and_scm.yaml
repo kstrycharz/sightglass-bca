@@ -38,18 +38,19 @@ rules:
       `$Id$`-style keyword expansion, a CI variable, or an XML field populated
       from `svn info` / `git remote -v` at build time.
     patterns:
-      # ssh-transported SCM is the strongest signal: it names a host that takes
-      # credentials, not a public read-only mirror.
+      # ssh-transported SCM ONLY. The rule's own reasoning is the whole rule:
+      # this names a host that expects credentials, which is what makes it
+      # infrastructure disclosure rather than a citation.
+      #
+      # The http(s) and bare-scheme forms used to live here and fired nine
+      # times at *high* on a shipped NVIDIA installer — on ffmpeg and v4l-utils
+      # homepages in LICENSES.chromium.html, on URLs inside JavaScript
+      # comments, and on an SVN `$URL:` keyword in a DLL. Every artifact that
+      # vendors third-party code carries those, so at high they block ordinary
+      # software. They live in `scm-repository-reference` below instead.
       - regex: '((?:svn|git|hg|bzr)\+ssh://[^\s"''<>&]{4,200})'
         capture: 1
       - regex: '(ssh://(?:git|svn|hg)@[^\s"''<>&]{4,200})'
-        capture: 1
-      - regex: '((?:svn|git|hg)://[^\s"''<>&]{4,200})'
-        capture: 1
-      # Repository paths on an http(s) host: /svn/, /git/, bare .git remotes.
-      - regex: '(https?://[a-z0-9.\-]{4,80}/(?:svn|git|scm|repos?)/[^\s"''<>&]{2,160})'
-        capture: 1
-      - regex: '(https?://[a-z0-9.\-]{4,80}/[^\s"''<>&]{2,120}\.git)\b'
         capture: 1
     # A public forge is not internal-infrastructure disclosure. This applies
     # whatever the scheme: `git://github.com/...` in .NET RepositoryUrl
@@ -73,6 +74,50 @@ rules:
         - "git://github.com/dotnet/runtime"
         - "https://api.github.com/repos/syncthing/syncthing/releases?per_page=30"
         - "git+ssh://git@github.com/example/project.git"
+        # Observed in a shipped NVIDIA installer. A citation is not a
+        # credentialed host, whatever its path looks like.
+        - "https://git.ffmpeg.org/ffmpeg.git"
+        - "http://marijnhaverbeke.nl/git/acorn"
+        - "git://github.com/dotnet/runtime"
+
+  - id: scm-repository-reference
+    name: Source repository reference
+    category: ip-exposure
+    severity: low
+    confidence: 0.4
+    cwe: CWE-200
+    description: >
+      A repository URL over an unauthenticated transport — an http(s) path
+      ending `.git`, a `/scm/` or `/git/` path, or a bare `git://` scheme.
+      Worth knowing where a build came from, and occasionally the first sign
+      that an internal repository is named in a shipped artifact.
+
+      Low severity because it is overwhelmingly a *citation*: license files,
+      vendored third-party sources, and dependency metadata all carry them.
+      A shipped NVIDIA installer produced nine of these from ffmpeg and
+      v4l-utils homepages alone. Anything that names a host expecting
+      credentials is `scm-url`, at high, instead.
+    remediation: |
+      Usually nothing. Confirm the host is one you are content to publish —
+      a public forge or upstream project needs no action.
+
+      If it names an internal repository, stamp a commit hash rather than a
+      resolvable URL, and check the build template that injected it.
+    patterns:
+      - regex: '((?:svn|git|hg)://[^\s"''<>&]{4,200})'
+        capture: 1
+      - regex: '(https?://[a-z0-9.\-]{4,80}/(?:svn|scm|repos?)/[^\s"''<>&]{2,160})'
+        capture: 1
+      - regex: '(https?://[a-z0-9.\-]{4,80}/[^\s"''<>&]{2,120}\.git)\b'
+        capture: 1
+    tags: [scm, build-metadata, high-noise]
+    tests:
+      positive:
+        - "https://git.corp.example.net/scm/platform/service.git"
+        - "git://internal-mirror.example.com/kernel"
+      negative:
+        - "https://www.example.com/downloads"
+        - "https://example.com/documentation/guide.html"
 
   - id: internal-server-hostname
     name: Internal server hostname

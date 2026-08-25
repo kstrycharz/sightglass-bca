@@ -247,8 +247,15 @@ def _run_unpack(
     stage.evidence_count = len(nodes)
     if payload.get("truncated"):
         # Surfaced rather than swallowed: a truncated tree that reports "no
-        # findings" would be indistinguishable from a clean artifact.
-        stage.status = StageStatus.COMPLETED
+        # findings" is indistinguishable from a clean artifact.
+        #
+        # This said COMPLETED, which recorded the reason in `error` and then
+        # hid it from the one consumer that matters. `is_degraded` is what the
+        # release gate reads to decide whether a scan can support a PASS, so a
+        # completed-but-partial stage let a 213 MB installer pass with its
+        # 376 MB app.asar never opened. TRUNCATED makes the gate return
+        # INCONCLUSIVE instead (ADR-0018).
+        stage.status = StageStatus.TRUNCATED
         stage.error = "; ".join((payload.get("budget") or {}).get("reasons", []))[:2000]
     return result, payload
 
