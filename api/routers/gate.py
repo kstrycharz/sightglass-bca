@@ -14,19 +14,22 @@ second is the one that matters:
 
 from __future__ import annotations
 
+import contextlib
 from typing import Annotated, Any
 
 import structlog
 import yaml
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from api.deps import get_caller
 from core.config import SIGHTGLASS_VERSION
 from core.db import get_session
-from core.models import Artifact, Finding, FindingLocation, Run
+from core.models import Artifact, Finding, FindingLocation, Run, RunManifest, RunStage
+from core.models.enums import StageStatus
 from core.pipeline.gate import RunNotReady, gate_run, resolve_baseline
 from core.policy import (
     Policy,
@@ -36,6 +39,7 @@ from core.policy import (
     verdict_to_dict,
 )
 from core.vocab import Severity
+from reporting.pdf import ReportData, ReportFinding, render_report
 from reporting.sarif import SarifFinding, build_sarif
 
 log = structlog.get_logger(__name__)
@@ -214,4 +218,109 @@ def get_sarif(
         tool_version=SIGHTGLASS_VERSION,
         artifact_name=root_name,
         run_id=run_id,
+    )
+
+
+@router.get("/{run_id}/report.pdf")
+def get_pdf_report(
+    run_id: str,
+    session: Annotated[Session, Depends(get_session)],
+) -> Response:
+    """The release record, as a PDF.
+
+    Rendered from the stored run rather than from a live scan, so the document
+    for a given run never changes — which is what makes it archivable. Values
+    are masked; a PDF is emailed and printed, and is the last place a
+    credential should be legible.
+    """
+    run = session.get(Run, run_id)
+    if run is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"run {run_id} not found")
+
+    root = session.scalars(
+        select(Artifact).where(Artifact.run_id == run_id, Artifact.parent_id.is_(None)).limit(1)
+    ).first()
+
+    baseline = resolve_baseline(session, run)
+    findings = list(
+        session.scalars(
+            select(Finding).where(Finding.run_id == run_id).order_by(Finding.severity)
+        ).all()
+    )
+
+    locations = session.execute(
+        select(FindingLocation.finding_id, FindingLocation.path_in_tree, FindingLocation.offset)
+        .where(FindingLocation.run_id == run_id)
+        .order_by(FindingLocation.finding_id, FindingLocation.path_in_tree)
+    ).all()
+    first_location: dict[str, tuple[str, int | None]] = {}
+    for finding_id, path, offset in locations:
+        first_location.setdefault(str(finding_id), (str(path), offset))
+
+    counts: dict[str, int] = {}
+    projected: list[ReportFinding] = []
+    for finding in findings:
+        counts[finding.severity] = counts.get(finding.severity, 0) + 1
+        path, offset = first_location.get(finding.id, (root.name if root else "unknown", None))
+        projected.append(
+            ReportFinding(
+                severity=Severity(finding.severity),
+                rule_id=finding.rule_id,
+                title=finding.title,
+                value_masked=finding.value_masked,
+                path_in_tree=path,
+                offset=offset,
+                is_new=finding.id not in baseline.finding_ids,
+            )
+        )
+    # Most severe first, which is the order a reader needs and not the order
+    # the database returns.
+    projected.sort(key=lambda f: (f.severity.rank, f.rule_id))
+
+    manifest = session.scalars(
+        select(RunManifest).where(RunManifest.run_id == run_id).limit(1)
+    ).first()
+    stages = session.scalars(select(RunStage).where(RunStage.run_id == run_id)).all()
+    degraded = tuple(
+        sorted(
+            f"{s.analyzer} ({s.status})" for s in stages if StageStatus(s.status).is_degraded
+        )
+    )
+
+    artifact_count = session.scalar(
+        select(func.count()).select_from(Artifact).where(Artifact.run_id == run_id)
+    )
+
+    # A run still in flight has no verdict yet, and the record is still worth
+    # producing without one.
+    verdict = None
+    with contextlib.suppress(RunNotReady):
+        verdict, _ = gate_run(session, run_id, Policy())
+
+    document = render_report(
+        ReportData(
+            run_id=run_id,
+            artifact_name=root.name if root else run_id,
+            artifact_sha256=root.sha256 if root else "",
+            artifact_size_bytes=root.size_bytes if root else 0,
+            attested_by=run.attested_by,
+            attestation_reference=run.attestation_reference,
+            scanned_at=run.finished_at or run.created_at,
+            findings=projected,
+            counts_by_severity=counts,
+            files_analysed=int(artifact_count or 1),
+            verdict=verdict,
+            rule_pack_version=manifest.rule_pack_version if manifest else "",
+            rule_pack_hash=manifest.rule_pack_hash if manifest else "",
+            manifest_fingerprint=manifest.fingerprint if manifest else "",
+            tool_versions=dict(manifest.tool_versions or {}) if manifest else {},
+            degraded_stages=degraded,
+        )
+    )
+
+    filename = f"sightglass-{(root.name if root else run_id)}.pdf".replace(" ", "-")
+    return Response(
+        content=document,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

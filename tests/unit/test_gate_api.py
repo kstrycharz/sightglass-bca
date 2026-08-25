@@ -203,3 +203,31 @@ def test_sarif_carries_no_plaintext(client: TestClient) -> None:
 
 def test_sarif_for_an_unknown_run_is_404(client: TestClient) -> None:
     assert client.get("/api/runs/nope/sarif").status_code == 404
+
+
+def test_pdf_report_is_a_real_pdf(client: TestClient) -> None:
+    response = client.get("/api/runs/run-1/report.pdf")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.content.startswith(b"%PDF-")
+    assert response.content.rstrip().endswith(b"%%EOF")
+    assert "attachment" in response.headers.get("content-disposition", "")
+
+
+def test_pdf_report_is_deterministic(client: TestClient) -> None:
+    """A release record whose bytes change between renderings cannot be
+    hashed, signed, or treated as an audit artifact."""
+    first = client.get("/api/runs/run-1/report.pdf").content
+    second = client.get("/api/runs/run-1/report.pdf").content
+    assert first == second
+
+
+def test_pdf_report_carries_no_plaintext(client: TestClient) -> None:
+    """A PDF is emailed, archived and printed. It is the last place a
+    credential should be legible."""
+    body = client.get("/api/runs/run-1/report.pdf").content
+    assert b"AKIAIOSFODNN7EXAMPLE" not in body
+
+
+def test_pdf_report_for_an_unknown_run_is_404(client: TestClient) -> None:
+    assert client.get("/api/runs/nope/report.pdf").status_code == 404

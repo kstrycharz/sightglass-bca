@@ -72,6 +72,9 @@ known-first-party = ["core", "api", "cli", "reporting", "mcp", "tests"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101"]
+# The PDF writer's character-substitution table has to name the ambiguous
+# typographic characters literally in order to replace them.
+"reporting/pdf.py" = ["RUF001"]
 
 [tool.mypy]
 python_version = "3.12"

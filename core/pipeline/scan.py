@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 
 from core.config import SIGHTGLASS_VERSION, get_settings
 from core.models import Artifact, Evidence, Run, RunManifest, RunStage, Suppression
+from core.models.base import new_uuid
 from core.models.enums import RunStatus, StageStatus
 from core.pipeline.correlator import correlate
 from core.rules import load_rule_pack
@@ -156,6 +157,9 @@ def _execute(run: Run, session: Session, run_dir: Path) -> ScanOutcome:
     evidence = _to_evidence(run, static_payload, staged_paths, root)
     session.add_all(evidence)
     session.flush()
+
+    # Only now is it known which files matter enough to keep.
+    _retain_evidence_bytes(session, run, evidence, staged_paths, scan_in)
 
     _apply_identification(session, run, static_payload, staged_paths)
 
@@ -308,30 +312,37 @@ def _materialise_tree(
     payload: dict[str, Any],
     unpack_out: Path,
 ) -> dict[str, str]:
-    """Turn the unpack manifest into Artifact rows. Returns path_in_tree -> id."""
+    """Turn the unpack manifest into Artifact rows. Returns path_in_tree -> id.
+
+    Metadata only — no bytes are uploaded here. Storing every extracted file
+    was the wall: a 213 MB installer that unpacks to 69 000 files meant 69 000
+    object-store round trips at roughly 22/sec, so the static analyzer did not
+    start for the better part of an hour. The overwhelming majority of those
+    files never appear in a finding and their bytes are never fetched.
+
+    `_retain_evidence_bytes` uploads afterwards, for the handful that did
+    produce evidence. Every node still gets a row, a hash and a size, so the
+    artifact tree and the manifest are unchanged — what is dropped is the
+    ability to re-download a file nothing was found in, which nothing in the
+    product does.
+    """
     by_path: dict[str, str] = {}
-    store = get_object_store()
-    extracted_dir = unpack_out / "extracted"
 
     # Sorted by depth so a parent always exists before its children.
     nodes = sorted(payload.get("nodes", []), key=lambda n: (n["depth"], n["path_in_tree"]))
+
+    pending: list[Artifact] = []
     for node in nodes:
         parent_path = node.get("parent_path_in_tree")
         parent_id = root.id if parent_path == root.path_in_tree else by_path.get(parent_path or "")
         if parent_id is None:
             parent_id = root.id
 
-        on_disk = extracted_dir / node["relative_path"]
-        storage_key: str | None = None
-        if on_disk.is_file() and node["size_bytes"] <= RETAIN_EXTRACTED_MAX_BYTES:
-            try:
-                storage_key = store.put_file(on_disk, name=Path(node["relative_path"]).name).key
-            except Exception as exc:
-                log.warning(
-                    "scan.store_extracted_failed", path=node["path_in_tree"], error=str(exc)
-                )
-
+        # Assigned here rather than left to the column default, so children can
+        # reference a parent id without a flush per node — the other half of
+        # the 69 000-round-trip problem.
         artifact = Artifact(
+            id=new_uuid(),
             run_id=run.id,
             parent_id=parent_id,
             name=Path(node["relative_path"]).name,
@@ -339,14 +350,60 @@ def _materialise_tree(
             depth=node["depth"],
             sha256=node.get("sha256") or "",
             size_bytes=node["size_bytes"],
-            storage_key=storage_key,
+            storage_key=None,
             extracted_by=node.get("extracted_by"),
         )
-        session.add(artifact)
-        session.flush()
+        pending.append(artifact)
         by_path[node["path_in_tree"]] = artifact.id
 
+    session.add_all(pending)
+    session.flush()
+    log.info("scan.tree_materialised", run_id=run.id, artifacts=len(pending))
     return by_path
+
+
+def _retain_evidence_bytes(
+    session: Session,
+    run: Run,
+    evidence: list[Evidence],
+    staged_paths: dict[str, str],
+    scan_in: Path,
+) -> int:
+    """Upload bytes for the artifacts that actually produced evidence.
+
+    This is what makes "show me the bytes behind this finding" work, and it
+    costs one round trip per interesting file rather than one per file.
+    """
+    wanted = {row.artifact_id for row in evidence if row.artifact_id}
+    if not wanted:
+        return 0
+
+    # staged_paths maps the analyzer's relative path to an artifact id; invert
+    # it to find the bytes on disk for the ids we care about.
+    on_disk_by_id = {artifact_id: rel for rel, artifact_id in staged_paths.items()}
+
+    store = get_object_store()
+    stored = 0
+    for artifact in session.scalars(
+        select(Artifact).where(Artifact.run_id == run.id, Artifact.id.in_(wanted))
+    ).all():
+        if artifact.storage_key or artifact.size_bytes > RETAIN_EXTRACTED_MAX_BYTES:
+            continue
+        relative = on_disk_by_id.get(artifact.id)
+        if not relative:
+            continue
+        path = scan_in / relative
+        if not path.is_file():
+            continue
+        try:
+            artifact.storage_key = store.put_file(path, name=artifact.name).key
+            stored += 1
+        except Exception as exc:
+            # A finding without retrievable bytes is still a finding.
+            log.warning("scan.store_evidence_failed", path=artifact.path_in_tree, error=str(exc))
+
+    log.info("scan.evidence_bytes_retained", run_id=run.id, stored=stored, candidates=len(wanted))
+    return stored
 
 
 def _to_evidence(

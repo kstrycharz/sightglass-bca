@@ -257,6 +257,20 @@ class SightglassClient:
         )
         return dict(result or {})
 
+    def get_pdf(self, run_id: str) -> bytes:
+        """The release record. Returns raw bytes rather than JSON."""
+        url = f"{self.base_url}/api/runs/{run_id}/report.pdf"
+        request = urllib.request.Request(url, headers=self._headers(), method="GET")
+        try:
+            with urllib.request.urlopen(request, timeout=self._timeout_s) as response:
+                return bytes(response.read())
+        except urllib.error.HTTPError as exc:
+            raise ApiError(
+                f"GET report.pdf failed: HTTP {exc.code}", status=exc.code
+            ) from None
+        except urllib.error.URLError as exc:
+            raise ApiError(f"cannot reach {self.base_url}: {exc.reason}") from None
+
     def get_sarif(self, run_id: str) -> dict[str, Any]:
         result = self._request("GET", f"/api/runs/{run_id}/sarif")
         return dict(result or {})

@@ -158,6 +158,9 @@ def scan(
     timeout: Annotated[int, typer.Option(help="Seconds to wait for the scan.")] = 1800,
     poll_interval: Annotated[float, typer.Option(help="Seconds between status polls.")] = 5.0,
     sarif: Annotated[Path | None, typer.Option(help="Write SARIF here for code scanning.")] = None,
+    pdf: Annotated[
+        Path | None, typer.Option(help="Write the PDF release record here.")
+    ] = None,
     json_out: Annotated[
         Path | None, typer.Option("--json", help="Write the verdict as JSON.")
     ] = None,
@@ -268,6 +271,7 @@ def scan(
         json_out=json_out,
         markdown_out=markdown_out,
         sarif=sarif,
+        pdf=pdf,
         warn_only=warn_only,
     )
 
@@ -283,6 +287,7 @@ def _emit_verdict(
     json_out: Path | None,
     markdown_out: Path | None,
     sarif: Path | None,
+    pdf: Path | None,
     warn_only: bool,
 ) -> NoReturn:
     """Render a verdict, write the requested artefacts, and exit.
@@ -319,6 +324,15 @@ def _emit_verdict(
         sarif.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         typer.echo(f"wrote {sarif}")
 
+    if pdf is not None:
+        try:
+            document = client.get_pdf(run_id)
+        except ApiError as exc:
+            _fail(f"could not fetch the PDF report: {exc}")
+        pdf.parent.mkdir(parents=True, exist_ok=True)
+        pdf.write_bytes(document)
+        typer.echo(f"wrote {pdf}")
+
     if warn_only and verdict.decision is not GateDecision.PASS:
         typer.secho(
             "warn-only: the gate would have failed this build", fg=typer.colors.YELLOW, err=True
@@ -349,6 +363,9 @@ def gate(
         str, typer.Option(help="Compare against this run id instead of the linked predecessor.")
     ] = "",
     sarif: Annotated[Path | None, typer.Option(help="Write SARIF here for code scanning.")] = None,
+    pdf: Annotated[
+        Path | None, typer.Option(help="Write the PDF release record here.")
+    ] = None,
     json_out: Annotated[
         Path | None, typer.Option("--json", help="Write the verdict as JSON.")
     ] = None,
@@ -412,6 +429,7 @@ def gate(
         json_out=json_out,
         markdown_out=markdown_out,
         sarif=sarif,
+        pdf=pdf,
         warn_only=warn_only,
     )
 
