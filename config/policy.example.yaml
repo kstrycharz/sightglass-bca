@@ -1,0 +1,66 @@
+# Sightglass release policy
+#
+# Copy to `.sightglass/policy.yaml` in the repository that produces the
+# artifact, and commit it. The team that owns the binary owns the definition of
+# "shippable", and changing this file should require a review.
+#
+# Validate with:  sightglass policy validate .sightglass/policy.yaml
+
+version: 1
+name: default
+
+block:
+  # Findings at or above this severity fail the build.
+  # One of: critical, high, medium, low, info — or `none` to disable the floor
+  # and rely only on the rule and category lists below.
+  severity_at_or_above: high
+
+  # Categories that always block, whatever their severity. Useful for the
+  # exposure classes your organisation treats as non-negotiable.
+  categories: []
+  #  - cloud_credentials
+  #  - private_keys
+
+  # Individual rules that always block.
+  rules: []
+  #  - aws_secret_access_key
+
+# Ceilings on findings that do NOT hit the blocking floor. -1 means unlimited.
+# These exist to catch a build that suddenly produces four hundred medium
+# findings, which usually means something upstream changed.
+budgets:
+  critical: -1
+  high: -1
+  medium: -1
+  low: -1
+  info: -1
+
+baseline:
+  # new_only  — only findings this build INTRODUCED can fail it. Findings
+  #             inherited from the previous release are reported but do not
+  #             block. This is the default, and it is what makes the gate
+  #             adoptable: a team with 200 legacy findings can turn it on today
+  #             and stop the bleeding, then burn down the backlog on their own
+  #             schedule.
+  # all       — every open finding blocks. Correct for a greenfield product or
+  #             a final release branch; a good way to get the gate switched off
+  #             everywhere else.
+  mode: new_only
+
+# What to do when an analyzer times out, runs out of memory, or fails, meaning
+# the artifact was not fully examined.
+#   fail — verdict is INCONCLUSIVE (exit 3). The default, and the honest one.
+#   warn — report it, but let a clean scan pass.
+#   pass — ignore it entirely. Not recommended.
+on_degraded: fail
+
+# Whether an AI triage verdict of "false positive" may unblock a release.
+# False by default and deliberately so: the model is there to reduce noise for
+# a human reviewer, not to sign off a release. See ADR-0017.
+trust_llm_dismissals: false
+
+waivers:
+  # Waivers live in `.sightglass/waivers.yaml` next to this file.
+  max_ttl_days: 90
+  require_owner: true
+  require_reason: true

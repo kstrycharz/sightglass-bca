@@ -14,6 +14,7 @@ from core.models.enums import (
     StageStatus,
 )
 from core.models.tables import (
+    ApiToken,
     Artifact,
     AuditLog,
     Evidence,
@@ -27,6 +28,7 @@ from core.models.tables import (
 )
 
 __all__ = [
+    "ApiToken",
     "Artifact",
     "ArtifactKind",
     "AuditAction",

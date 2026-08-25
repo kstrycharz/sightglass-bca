@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 from typing import Annotated
@@ -17,6 +18,20 @@ import typer
 from core.config import SIGHTGLASS_VERSION, get_settings
 from core.logging import configure_logging
 
+
+def _use_utf8_console() -> None:
+    """Token prefixes, unpack-tree separators and severity glyphs are all
+    non-ASCII, and a Windows console defaults to cp1252 — which renders them as
+    mojibake, or kills the command outright with a UnicodeEncodeError partway
+    through output it has already computed. Windows is a first-class
+    environment here (ADR-0006), and this is what makes it behave like one."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
+_use_utf8_console()
+
 app = typer.Typer(
     name="sightglass",
     help="Scan the artifacts you are about to ship for exposed secrets and IP.",
@@ -25,6 +40,16 @@ app = typer.Typer(
 )
 sandbox_app = typer.Typer(help="Sandbox runtime operations.", no_args_is_help=True)
 app.add_typer(sandbox_app, name="sandbox")
+
+# The CI-facing surface. Imported eagerly because `sightglass scan --help` on a
+# build agent must not depend on a database or a Docker socket being reachable.
+from cli.scan_commands import gate, policy_app, scan  # noqa: E402
+from cli.token_commands import token_app  # noqa: E402
+
+app.command("scan")(scan)
+app.command("gate")(gate)
+app.add_typer(policy_app, name="policy")
+app.add_typer(token_app, name="token")
 
 
 @app.command()

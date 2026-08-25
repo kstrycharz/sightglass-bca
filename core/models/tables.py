@@ -376,6 +376,54 @@ class FindingLocation(Base):
     finding: Mapped[Finding] = relationship(back_populates="locations")
 
 
+class ApiToken(Base, TimestampMixin):
+    """A credential for the API.
+
+    The plaintext is shown once at creation and never stored — only
+    ``token_hash``, which is what the lookup is keyed on. A dump of this table
+    therefore yields nothing usable, which is the point: the rows describe
+    *which* credentials exist, not what they are.
+
+    Revocation is a flag rather than a delete. "Who could reach this API in
+    March, and who revoked them" is an audit question, and a deleted row cannot
+    answer it.
+    """
+
+    __tablename__ = "api_tokens"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    name: Mapped[str] = mapped_column(String(128))
+    """Human label — 'github-actions release pipeline', 'kyle laptop'. What
+    makes rotation possible: you cannot retire a credential nobody can name."""
+
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    token_prefix: Mapped[str] = mapped_column(String(32))
+    """The redacted form, for display. Lets an operator match a row to a log
+    line without the plaintext existing anywhere."""
+
+    scope: Mapped[str] = mapped_column(String(16), default="ci")
+    created_by: Mapped[str] = mapped_column(String(255), default="system")
+
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    """Optional, unlike a waiver's expiry. A CI token that rotates on a
+    schedule is better, but a build pipeline that dies at 3am because a token
+    silently lapsed is how teams end up setting no expiry at all — so this is
+    encouraged in the docs and not enforced by the schema."""
+
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    """Best-effort and deliberately coarse: updated on use, but a token used
+    twice in the same second records one timestamp. It exists to answer "is
+    anything still using this?" before revoking, not to be a request log."""
+
+    use_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    def is_active(self, now: datetime) -> bool:
+        if self.revoked_at is not None:
+            return False
+        return not (self.expires_at is not None and self.expires_at <= now)
+
+
 class AuditLog(Base, TimestampMixin):
     """Append-only. There is deliberately no update or delete path."""
 

@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
+from api.deps import require_scope
 from api.schemas.models import LlmSettingsOut, ProviderHealthOut
+from core.auth import Scope
 from core.llm import LLMConfigError, build_provider, load_config
 from core.rules import load_rule_pack
 
-router = APIRouter(prefix="/api/settings", tags=["settings"])
+router = APIRouter(
+    prefix="/api/settings",
+    tags=["settings"],
+    dependencies=[Depends(require_scope(Scope.ADMIN))],
+)
 
 
 @router.get("/llm", response_model=LlmSettingsOut)

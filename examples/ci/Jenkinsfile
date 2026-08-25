@@ -1,0 +1,47 @@
+// Sightglass release gate — Jenkins declarative pipeline
+
+pipeline {
+  agent any
+
+  environment {
+    SIGHTGLASS_API_URL = credentials('sightglass-api-url')
+    // A ci-scoped token: submit and receive a verdict, nothing more.
+    SIGHTGLASS_TOKEN   = credentials('sightglass-token')
+    ARTIFACT           = 'dist/installer.exe'
+  }
+
+  stages {
+    stage('Build') {
+      steps {
+        sh './scripts/build.sh'
+      }
+    }
+
+    stage('Release gate') {
+      steps {
+        // Attestation fills itself in from CHANGE_AUTHOR and BUILD_URL.
+        // No `|| true`, and no catchError: a non-zero exit is the point.
+        sh '''
+          sightglass scan "$ARTIFACT" \
+            --sarif sightglass.sarif \
+            --json  sightglass-verdict.json \
+            --timeout 1800
+        '''
+      }
+      post {
+        always {
+          archiveArtifacts artifacts: 'sightglass-verdict.json,sightglass.sarif',
+                           allowEmptyArchive: true
+          recordIssues tools: [sarif(pattern: 'sightglass.sarif')]
+        }
+      }
+    }
+
+    stage('Publish') {
+      when { buildingTag() }
+      steps {
+        sh './scripts/publish.sh'
+      }
+    }
+  }
+}

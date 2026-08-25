@@ -13,6 +13,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from api.deps import get_caller, require_scope
 from api.schemas.models import (
     ArtifactOut,
     ManifestOut,
@@ -22,6 +23,7 @@ from api.schemas.models import (
     StageOut,
     TriageResponse,
 )
+from core.auth import Scope
 from core.db import get_session, session_scope
 from core.models import Artifact, Finding, FindingLocation, Run, RunStage
 from core.models.enums import RunStatus
@@ -29,7 +31,11 @@ from core.pipeline.ingest import AttestationRequired, ingest_artifact
 
 log = structlog.get_logger(__name__)
 
-router = APIRouter(prefix="/api/runs", tags=["runs"])
+router = APIRouter(
+    prefix="/api/runs",
+    tags=["runs"],
+    dependencies=[Depends(get_caller)],
+)
 
 
 @router.post("", response_model=RunCreated, status_code=status.HTTP_201_CREATED)
@@ -172,7 +178,12 @@ def _sse(payload: dict[str, Any]) -> str:
     return f"data: {json.dumps(payload, sort_keys=True)}\n\n"
 
 
-@router.post("/{run_id}/triage", response_model=TriageResponse)
+# Triage drives the model over the findings corpus, so it is an ADMIN act.
+@router.post(
+    "/{run_id}/triage",
+    response_model=TriageResponse,
+    dependencies=[Depends(require_scope(Scope.ADMIN))],
+)
 def triage(run_id: str) -> TriageResponse:
     """Run LLM triage over this run's findings.
 
@@ -269,7 +280,7 @@ def _build_tree(session: Session, run: Run) -> ArtifactOut | None:
     return build(roots[0]) if roots else None
 
 
-@router.post("/{run_id}/discover")
+@router.post("/{run_id}/discover", dependencies=[Depends(require_scope(Scope.ADMIN))])
 def discover(run_id: str) -> dict[str, Any]:
     """Propose detection rules for what this run's rule pack missed.
 

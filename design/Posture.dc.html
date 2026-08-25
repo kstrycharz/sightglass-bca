@@ -1,0 +1,246 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+  <style>
+    body { margin: 0; }
+    a { color: oklch(0.72 0.14 258); text-decoration: none; }
+    a:hover { color: oklch(0.82 0.12 258); }
+    .tnum { font-variant-numeric: tabular-nums; }
+  </style>
+</helmet>
+
+<div style="width: 1440px; height: 900px; display: flex; background: oklch(0.145 0.005 265); color: oklch(0.95 0.002 265); font-family: 'IBM Plex Sans', system-ui, sans-serif; overflow: hidden;">
+
+  <!-- Rail. Navigation stays put while a long table scrolls. -->
+  <div style="width: 216px; flex-shrink: 0; display: flex; flex-direction: column; border-right: 1px solid oklch(0.3 0.008 265); background: oklch(0.185 0.005 265);">
+    <div style="padding: 20px 20px 18px 20px; border-bottom: 1px solid oklch(0.3 0.008 265);">
+      <div style="display: flex; align-items: center; gap: 9px;">
+        <svg viewBox="0 0 20 20" style="width: 20px; height: 20px; color: oklch(0.72 0.14 258);" aria-hidden="true">
+          <circle cx="9" cy="9" r="6" fill="none" stroke="currentColor" stroke-width="1.6"></circle>
+          <circle cx="9" cy="9" r="2.2" fill="currentColor" opacity="0.35"></circle>
+          <path d="M13.5 13.5 L18 18" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path>
+        </svg>
+        <span style="font-size: 15px; font-weight: 600; letter-spacing: -0.01em;">Sightglass</span>
+      </div>
+      <div style="margin-top: 7px; font-size: 11px; line-height: 1.35; color: oklch(0.57 0.008 265);">Shipped-artifact exposure scanner</div>
+    </div>
+
+    <div style="flex: 1; padding: 12px 10px; display: flex; flex-direction: column; gap: 2px;">
+      <sc-for list="{{ nav }}" as="item" hint-placeholder-count="4">
+        <div onClick="{{ item.pick }}" style="{{ item.style }}">{{ item.label }}</div>
+      </sc-for>
+    </div>
+
+    <div style="padding: 16px 20px; border-top: 1px solid oklch(0.3 0.008 265); display: flex; flex-direction: column; gap: 8px;">
+      <div style="display: flex; align-items: center; gap: 7px;">
+        <span style="width: 6px; height: 6px; border-radius: 999px; background: oklch(0.74 0.14 155);"></span>
+        <span style="font-size: 11px; color: oklch(0.72 0.008 265);">Air-gapped</span>
+      </div>
+      <div style="font-size: 10.5px; line-height: 1.5; color: oklch(0.57 0.008 265);">Artifacts never leave this network.</div>
+    </div>
+  </div>
+
+  <!-- Main -->
+  <div style="flex: 1; min-width: 0; display: flex; flex-direction: column;">
+
+    <div style="display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; padding: 26px 36px 20px 36px;">
+      <div style="display: flex; flex-direction: column; gap: 7px;">
+        <span style="font-size: 25px; font-weight: 600; letter-spacing: -0.022em;">Release posture</span>
+        <span class="tnum" style="font-size: 13px; color: oklch(0.57 0.008 265);">5 artifacts · 696 files analysed · 8 completed scans</span>
+      </div>
+      <button style="padding: 10px 18px; border-radius: 6px; border: 1px solid oklch(0.4 0.01 265); background: oklch(0.225 0.006 265); color: oklch(0.95 0.002 265); font-family: inherit; font-size: 13px; font-weight: 500; cursor: pointer;">New scan</button>
+    </div>
+
+    <!-- The three numbers that decide whether anyone reads further -->
+    <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; padding: 0 36px 20px 36px;">
+
+      <div style="padding: 22px 24px; border-radius: 10px; background: oklch(0.185 0.005 265); border: 1px solid oklch(0.72 0.19 25)33; display: flex; flex-direction: column; gap: 12px;">
+        <span style="font-size: 11px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: oklch(0.72 0.19 25);">Would block a release</span>
+        <div style="display: flex; align-items: baseline; gap: 12px;">
+          <span class="tnum" style="font-size: 52px; line-height: 1; font-weight: 700; letter-spacing: -0.035em; color: oklch(0.72 0.19 25);">6</span>
+          <span style="font-size: 13px; color: oklch(0.72 0.008 265);">findings across 2 artifacts</span>
+        </div>
+        <span style="font-size: 12.5px; line-height: 1.5; color: oklch(0.57 0.008 265); text-wrap: pretty;">Critical or high, in the most recent scan of each artifact.</span>
+      </div>
+
+      <div style="padding: 22px 24px; border-radius: 10px; background: oklch(0.185 0.005 265); border: 1px solid oklch(0.3 0.008 265); display: flex; flex-direction: column; gap: 12px;">
+        <span style="font-size: 11px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: oklch(0.57 0.008 265);">New this week</span>
+        <div style="display: flex; align-items: baseline; gap: 12px;">
+          <span class="tnum" style="font-size: 52px; line-height: 1; font-weight: 700; letter-spacing: -0.035em;">5</span>
+          <span style="font-size: 13px; color: oklch(0.72 0.008 265);">introduced by a build</span>
+        </div>
+        <span style="font-size: 12.5px; line-height: 1.5; color: oklch(0.57 0.008 265); text-wrap: pretty;">What the gate fails on. Inherited findings are reported, not blocking.</span>
+      </div>
+
+      <div style="padding: 22px 24px; border-radius: 10px; background: oklch(0.185 0.005 265); border: 1px solid oklch(0.3 0.008 265); display: flex; flex-direction: column; gap: 12px;">
+        <span style="font-size: 11px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: oklch(0.57 0.008 265);">Total exposure</span>
+        <div style="display: flex; align-items: baseline; gap: 12px;">
+          <span class="tnum" style="font-size: 52px; line-height: 1; font-weight: 700; letter-spacing: -0.035em;">54</span>
+          <span style="font-size: 13px; color: oklch(0.72 0.008 265);">open findings</span>
+        </div>
+        <div style="display: flex; gap: 6px;">
+          <sc-for list="{{ mix }}" as="m" hint-placeholder-count="4">
+            <span style="{{ m.style }}"><span style="letter-spacing: 0.09em; text-transform: uppercase;">{{ m.label }}</span><span class="tnum" style="font-weight: 600;">{{ m.count }}</span></span>
+          </sc-for>
+        </div>
+      </div>
+    </div>
+
+    <!-- Runs -->
+    <div style="flex: 1; min-height: 0; margin: 0 36px 26px 36px; border-radius: 10px; border: 1px solid oklch(0.3 0.008 265); background: oklch(0.185 0.005 265); display: flex; flex-direction: column; overflow: hidden;">
+
+      <div style="display: flex; align-items: center; justify-content: space-between; padding: 16px 22px; border-bottom: 1px solid oklch(0.3 0.008 265);">
+        <span style="font-size: 15px; font-weight: 600; letter-spacing: -0.01em;">Runs</span>
+        <div style="display: flex; gap: 6px;">
+          <sc-for list="{{ filters }}" as="f" hint-placeholder-count="3">
+            <div onClick="{{ f.pick }}" style="{{ f.style }}">{{ f.label }}</div>
+          </sc-for>
+        </div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 1fr 132px 210px 96px 104px; gap: 16px; padding: 11px 22px; border-bottom: 1px solid oklch(0.3 0.008 265); font-size: 10.5px; font-weight: 600; letter-spacing: 0.11em; text-transform: uppercase; color: oklch(0.57 0.008 265);">
+        <span>Artifact</span>
+        <span>Status</span>
+        <span>Findings</span>
+        <span>Delta</span>
+        <span style="text-align: right;">Started</span>
+      </div>
+
+      <div style="flex: 1; min-height: 0; overflow: hidden;">
+        <sc-for list="{{ runs }}" as="run" hint-placeholder-count="5">
+          <div onClick="{{ run.pick }}" style="{{ run.rowStyle }}">
+            <div style="display: flex; flex-direction: column; gap: 4px; min-width: 0;">
+              <span style="font-size: 13.5px; font-weight: 500; letter-spacing: -0.008em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ run.name }}</span>
+              <span class="tnum" style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11px; color: oklch(0.57 0.008 265);">{{ run.meta }}</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 7px;">
+              <span style="{{ run.dotStyle }}"></span>
+              <span style="font-size: 12.5px; color: {{ run.statusColor }};">{{ run.status }}</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 5px; flex-wrap: wrap;">
+              <sc-for list="{{ run.chips }}" as="c" hint-placeholder-count="2">
+                <span style="{{ c.style }}"><span style="letter-spacing: 0.08em; text-transform: uppercase;">{{ c.label }}</span><span class="tnum" style="font-weight: 600;">{{ c.count }}</span></span>
+              </sc-for>
+              <sc-if value="{{ run.clean }}" hint-placeholder-val="{{ true }}">
+                <span style="font-size: 12.5px; color: oklch(0.74 0.14 155);">clean</span>
+              </sc-if>
+            </div>
+            <span class="tnum" style="font-size: 12.5px; color: {{ run.deltaColor }};">{{ run.delta }}</span>
+            <span class="tnum" style="font-size: 12.5px; color: oklch(0.57 0.008 265); text-align: right;">{{ run.when }}</span>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+
+<script data-dc-script data-props='{"density":{"editor":"enum","options":["comfortable","compact"],"default":"comfortable","section":"Demo"}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { selected: 'planted-installer.exe', filter: 'All', nav: 'Runs' };
+  }
+
+  chip(sev, count) {
+    const map = {
+      critical: ['oklch(0.72 0.19 25)', 'oklch(0.29 0.07 25)'],
+      high: ['oklch(0.76 0.15 55)', 'oklch(0.3 0.06 55)'],
+      medium: ['oklch(0.8 0.13 90)', 'oklch(0.31 0.05 90)'],
+      low: ['oklch(0.74 0.11 235)', 'oklch(0.28 0.05 235)'],
+    };
+    const pair = map[sev] || map.low;
+    return {
+      label: sev.slice(0, 4),
+      count: count,
+      style: 'display: inline-flex; align-items: center; gap: 5px; padding: 2px 7px; border-radius: 4px; font-size: 10px; color: ' + pair[0] + '; background: ' + pair[1] + '; border: 1px solid ' + pair[0] + '33;',
+    };
+  }
+
+  data() {
+    return [
+      { name: 'planted-installer.exe', meta: '3c239ce1 · 5.0 KB · 1 file', status: 'completed', sev: { critical: 3, high: 2, medium: 3 }, delta: 'no change', when: '6m ago' },
+      { name: 'NVIDIA-AI-Workbench-Setup.exe', meta: '5035c7cb · 203 MB · scanning', status: 'running', sev: {}, delta: 'baseline', when: 'now' },
+      { name: 'PowerShell-7.6.5-win-fxdependent.zip', meta: '3d7c0821 · 22 MB · 503 files', status: 'completed', sev: { medium: 20, low: 7 }, delta: '+5', when: '5d ago' },
+      { name: 'ripgrep-15.2.0-x86_64-pc-windows-msvc.zip', meta: '71b2fef8 · 1.7 MB · 14 files', status: 'completed', sev: { medium: 1, low: 1 }, delta: 'no change', when: '5d ago' },
+      { name: 'MoVaPuCo_4.3.zip', meta: '80019f47 · 34 MB · 175 files', status: 'completed', sev: { high: 1, medium: 6, low: 10 }, delta: 'baseline', when: '6d ago' },
+    ];
+  }
+
+  renderVals() {
+    const compact = (this.props.density ?? 'comfortable') === 'compact';
+    const rowPad = compact ? '10px 22px' : '15px 22px';
+
+    const statusColors = {
+      completed: 'oklch(0.74 0.14 155)',
+      running: 'oklch(0.72 0.14 258)',
+      queued: 'oklch(0.72 0.008 265)',
+      failed: 'oklch(0.72 0.19 25)',
+    };
+
+    const runs = this.data().map((r) => {
+      const on = this.state.selected === r.name;
+      const colour = statusColors[r.status] || 'oklch(0.72 0.008 265)';
+      const chips = ['critical', 'high', 'medium', 'low']
+        .filter((s) => r.sev[s])
+        .map((s) => this.chip(s, r.sev[s]));
+      return {
+        name: r.name,
+        meta: r.meta,
+        status: r.status,
+        statusColor: colour,
+        dotStyle: 'width: 6px; height: 6px; border-radius: 999px; background: ' + colour + ';',
+        chips: chips,
+        clean: chips.length === 0 && r.status === 'completed',
+        delta: r.delta,
+        deltaColor: r.delta.charAt(0) === '+' ? 'oklch(0.76 0.15 55)' : 'oklch(0.57 0.008 265)',
+        when: r.when,
+        pick: () => this.setState({ selected: r.name }),
+        rowStyle: 'display: grid; grid-template-columns: 1fr 132px 210px 96px 104px; gap: 16px; align-items: center; padding: ' + rowPad +
+          '; cursor: pointer; border-bottom: 1px solid oklch(0.3 0.008 265); border-left: 2px solid ' +
+          (on ? 'oklch(0.72 0.14 258)' : 'transparent') + '; background: ' +
+          (on ? 'oklch(0.225 0.006 265)' : 'transparent') + ';',
+      };
+    });
+
+    const filters = ['All', 'Blocking', 'Running'].map((label) => {
+      const on = this.state.filter === label;
+      return {
+        label: label,
+        pick: () => this.setState({ filter: label }),
+        style: 'padding: 5px 11px; border-radius: 6px; font-size: 11.5px; font-weight: 500; cursor: pointer; border: 1px solid ' +
+          (on ? 'oklch(0.4 0.01 265)' : 'transparent') + '; background: ' +
+          (on ? 'oklch(0.3 0.008 265)' : 'transparent') + '; color: ' +
+          (on ? 'oklch(0.95 0.002 265)' : 'oklch(0.57 0.008 265)') + ';',
+      };
+    });
+
+    const nav = ['Runs', 'New scan', 'Detections', 'Settings'].map((label) => {
+      const on = this.state.nav === label;
+      return {
+        label: label,
+        pick: () => this.setState({ nav: label }),
+        style: 'padding: 7px 11px; border-radius: 6px; font-size: 13px; cursor: pointer; background: ' +
+          (on ? 'oklch(0.145 0.005 265)' : 'transparent') + '; color: ' +
+          (on ? 'oklch(0.95 0.002 265)' : 'oklch(0.72 0.008 265)') + '; font-weight: ' + (on ? '500' : '400') + ';',
+      };
+    });
+
+    return {
+      runs: runs,
+      filters: filters,
+      nav: nav,
+      mix: [this.chip('critical', 3), this.chip('high', 3), this.chip('medium', 30), this.chip('low', 18)],
+    };
+  }
+}
+</script>
+</body>
+</html>

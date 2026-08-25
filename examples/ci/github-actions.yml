@@ -1,0 +1,82 @@
+# Sightglass release gate — GitHub Actions
+#
+# Build the artifact, scan it, and stop the release if the gate blocks.
+# Copy into .github/workflows/ and adjust the build step for your project.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+  security-events: write   # required to upload SARIF to code scanning
+
+jobs:
+  build-and-gate:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # --- 1. build ------------------------------------------------------
+      - name: Build release artifact
+        run: |
+          msbuild MyProduct.sln /p:Configuration=Release /p:Platform=x64
+        shell: cmd
+
+      # --- 2. the gate ---------------------------------------------------
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # sightglass is not on PyPI yet: install from the repository at a
+      # pinned tag, or from a wheel on your internal index. Pin it — a gate
+      # that silently updates itself has a verdict you cannot reproduce.
+      - name: Install Sightglass CLI
+        run: pip install "sightglass @ git+https://github.com/your-org/sightglass@v0.0.1"
+
+      - name: Sightglass release gate
+        id: gate
+        env:
+          SIGHTGLASS_API_URL: ${{ secrets.SIGHTGLASS_API_URL }}
+          # A ci-scoped token. An admin token here would let any workflow
+          # with repo access read every finding Sightglass has ever stored.
+          SIGHTGLASS_TOKEN: ${{ secrets.SIGHTGLASS_TOKEN }}
+        run: |
+          sightglass scan dist/installer.exe `
+            --sarif sightglass.sarif `
+            --json  sightglass.json `
+            --timeout 1800
+        shell: pwsh
+        # The attestation fills itself in from GITHUB_ACTOR and the run URL.
+        # The verdict is appended to the job summary automatically.
+
+      # --- 3. make the findings visible ----------------------------------
+      # `always()` matters: the findings are most worth seeing on the run that
+      # just failed, which is exactly when a default `success()` would skip it.
+      - name: Upload SARIF to code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: sightglass.sarif
+          category: sightglass
+
+      - name: Keep the verdict as an artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sightglass-verdict
+          path: |
+            sightglass.json
+            sightglass.sarif
+
+      # --- 4. publish, only if the gate passed ----------------------------
+      # No `if:` needed — a blocking verdict exits non-zero and the job stops
+      # before reaching this step. Do NOT add `continue-on-error` above.
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: ./scripts/publish.ps1
+        shell: pwsh

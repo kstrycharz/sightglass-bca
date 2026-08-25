@@ -30,6 +30,12 @@ x-backend-env: &backend-env
   SIGHTGLASS_REPO_ROOT: /app
   SIGHTGLASS_LOG_LEVEL: ${SIGHTGLASS_LOG_LEVEL:-INFO}
   SIGHTGLASS_EGRESS_POLICY: ${SIGHTGLASS_EGRESS_POLICY:-deny}
+  # The API demands a token by default. On first start with no tokens it
+  # mints an admin one and prints it to the api container's log.
+  SIGHTGLASS_AUTH_REQUIRED: ${SIGHTGLASS_AUTH_REQUIRED:-true}
+  # CPU quota per analyzer container. The static analyzer parallelises
+  # across it; see Settings.analyzer_cpus for the measurements.
+  SIGHTGLASS_ANALYZER_CPUS: ${SIGHTGLASS_ANALYZER_CPUS:-4}
 
 services:
   postgres:
@@ -192,6 +198,10 @@ services:
     environment:
       NEXT_PUBLIC_API_URL: ${SIGHTGLASS_PUBLIC_API_URL:-http://localhost:8000}
       SIGHTGLASS_API_URL: http://api:8000
+      # The dashboard's own credential. Attached server-side by the proxy route
+      # and never sent to the browser. Mint an admin token and put it in .env:
+      #   docker compose exec api sightglass token create dashboard --scope admin
+      SIGHTGLASS_TOKEN: ${SIGHTGLASS_TOKEN:-}
     ports:
       - "${SIGHTGLASS_WEB_PORT:-3000}:3000"
     depends_on:

@@ -13,7 +13,15 @@ from pathlib import Path
 import pytest
 
 from core.models.enums import Severity
-from core.rules import RulePack, load_rule_pack, mask, scan_bytes, shannon_entropy
+from core.rules import (
+    Rule,
+    RuleLoadError,
+    RulePack,
+    load_rule_pack,
+    mask,
+    scan_bytes,
+    shannon_entropy,
+)
 from core.rules.scanner import extract_ascii, extract_strings, extract_utf16le
 
 RULES_DIR = Path(__file__).resolve().parents[2] / "detections"
@@ -199,3 +207,70 @@ class TestEntropy:
 
     def test_empty_is_zero(self) -> None:
         assert shannon_entropy("") == 0.0
+
+
+class TestRejectsMatching:
+    """The `rejects_matching` gate.
+
+    Motivated by the field test: `scm-url` fired at *high* severity on
+    `git://github.com/dotnet/runtime` inside a shipped .NET assembly and on a
+    public GitHub API URL inside a Go binary. Both are ordinary build
+    provenance pointing at a public mirror. A gate that blocks a release on
+    those is a gate a team switches off, so the exclusion is load-bearing and
+    gets its own tests rather than resting on the rule fixtures alone.
+    """
+
+    def test_public_forge_urls_are_rejected(self, pack: RulePack) -> None:
+        observed = [
+            b"git://github.com/dotnet/runtime",
+            b"https://api.github.com/repos/syncthing/syncthing/releases?per_page=30",
+            b"git+ssh://git@github.com/example/project.git",
+            b"https://raw.githubusercontent.com/example/project/main/x.git",
+        ]
+        for sample in observed:
+            matches = scan_bytes(sample, _only(pack, "scm-url"))
+            assert matches == [], f"{sample!r} should not be an SCM disclosure"
+
+    def test_internal_scm_hosts_still_match(self, pack: RulePack) -> None:
+        """The exclusion must not hollow the rule out."""
+        internal = [
+            b"ssh://git@gitlab.internal.example.com:2222/firmware/bootloader.git",
+            b"svn+ssh://delinux03.de.moog.com/data/svn/nvce/tags/B99133",
+            b"https://git.corp.example.net/scm/platform/service.git",
+        ]
+        for sample in internal:
+            matches = scan_bytes(sample, _only(pack, "scm-url"))
+            assert matches, f"{sample!r} is internal disclosure and must match"
+
+    def test_gate_is_applied_by_accepts(self) -> None:
+        import re as _re
+
+        rule = Rule(
+            id="t",
+            name="t",
+            category="c",
+            severity=Severity.HIGH,
+            patterns=(),
+            rejects_matching=(_re.compile(r"public\.example\.com"),),
+        )
+        assert rule.accepts("https://internal.example.com/repo") is True
+        assert rule.accepts("https://public.example.com/repo") is False
+
+    def test_a_bad_rejects_regex_is_fatal_at_load(self, tmp_path: Path) -> None:
+        """Consistent with every other load error: a rule pack that silently
+        drops a broken exclusion produces a scan that silently over-reports."""
+        (tmp_path / "bad.yaml").write_text(
+            "version: '1'\n"
+            "rules:\n"
+            "  - id: broken\n"
+            "    name: Broken\n"
+            "    category: c\n"
+            "    severity: low\n"
+            "    patterns:\n"
+            "      - regex: 'abc'\n"
+            "    rejects_matching:\n"
+            "      - '([unclosed'\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(RuleLoadError, match="rejects_matching"):
+            load_rule_pack(tmp_path)

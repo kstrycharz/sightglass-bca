@@ -117,6 +117,35 @@ make test-integration   # sandbox isolation tests — needs Docker
 On Windows, substitute `./make.ps1 <target>` for `make <target>`; the targets
 are identical.
 
+## Use it as a release gate
+
+The point of scanning a shipped artifact is to stop it shipping. Sightglass
+runs as a pipeline stage between the build and the release:
+
+```bash
+sightglass policy init                                    # once, per repository
+sightglass scan dist/installer.exe --sarif findings.sarif  # in CI
+```
+
+It uploads the artifact, waits for the scan, evaluates a policy your repository
+owns, and exits `0` pass, `1` blocked, `2` tool error, `3` inconclusive. The
+pipeline stops on anything but `0`.
+
+Three defaults make it something a team will actually leave switched on:
+
+- **It fails on what the build introduced**, not on the backlog it inherited,
+  so a product with 200 existing findings can adopt it today and stop the
+  bleeding while the backlog burns down.
+- **An incomplete scan is `inconclusive`, never a pass.** If an analyzer OOMs,
+  the artifact was not fully examined, and saying otherwise is the failure that
+  makes a gate worse than none.
+- **AI triage cannot open the gate.** A model may reduce noise for a reviewer;
+  it may not sign off a release.
+
+See [docs/CICD.md](docs/CICD.md) for the integration design, a staged rollout
+that does not get the tool uninstalled, and working workflows for GitHub
+Actions, GitLab, Azure DevOps, and Jenkins in [examples/ci/](examples/ci/).
+
 ## Architecture
 
 ```
@@ -143,8 +172,10 @@ Full detail in [ARCHITECTURE.md](ARCHITECTURE.md) and
 
 | Document | What it covers |
 | --- | --- |
-| [CLAUDE.md](CLAUDE.md) | Current status, ADR log, progress, next steps |
+| [CLAUDE.md](CLAUDE.md) | Current status, progress, next steps |
+| [docs/ADR.md](docs/ADR.md) | Architecture decision log, with rejected alternatives |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Components, pipeline stages, data model |
+| [docs/CICD.md](docs/CICD.md) | Running Sightglass as a CI/CD release gate |
 | [SECURITY.md](SECURITY.md) | Reporting vulnerabilities, responsible use |
 | [THREAT_MODEL.md](THREAT_MODEL.md) | What the sandbox defends against, and what it does not |
 

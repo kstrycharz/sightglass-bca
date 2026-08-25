@@ -231,6 +231,7 @@ def _run_unpack(
                 run_id=run.id,
                 analyzer="unpack",
                 timeout_s=UNPACK_TIMEOUT_S,
+                nano_cpus=_analyzer_nano_cpus(),
                 mounts=(
                     BindMount(str(staging), INPUT_DIR, MountMode.READ_ONLY),
                     BindMount(str(results), OUTPUT_DIR, MountMode.READ_WRITE),
@@ -273,6 +274,9 @@ def _run_static(
                 analyzer="static",
                 command=tuple(command),
                 timeout_s=STATIC_TIMEOUT_S,
+                # The static analyzer parallelises across this quota; see
+                # Settings.analyzer_cpus for the measurements.
+                nano_cpus=_analyzer_nano_cpus(),
                 mounts=(
                     BindMount(str(staging), INPUT_DIR, MountMode.READ_ONLY),
                     BindMount(str(rules_dir), RULES_MOUNT, MountMode.READ_ONLY),
@@ -458,6 +462,17 @@ def _link_previous_run(run: Run, root: Artifact, session: Session) -> None:
     ).first()
     if previous is not None:
         run.previous_run_id = previous.id
+
+
+def _analyzer_nano_cpus() -> int:
+    """CPU quota for an analyzer container, from settings, in nano-CPUs.
+
+    Floored at one whole core: a fractional quota makes the analyzer's own
+    cgroup read round down to a single worker anyway, and a sub-core quota
+    turns a CPU-bound scan into a timeout.
+    """
+    cpus = max(1.0, get_settings().analyzer_cpus)
+    return int(cpus * 1_000_000_000)
 
 
 def _grant_analyzer_access(path: Path) -> None:

@@ -8,14 +8,23 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from api.deps import require_scope
 from api.schemas.models import FindingOut, FindingPatch, LlmAssessment, LocationOut
+from core.auth import Scope
 from core.db import get_session, session_scope
 from core.models import AuditLog, Finding, FindingLocation
 from core.models.enums import AuditAction, FindingStatus
 from core.storage import get_object_store
 from core.vocab import Severity
 
-router = APIRouter(prefix="/api", tags=["findings"])
+# The findings corpus is a company's exposed secrets in one document, and
+# artifact bytes are the artifact itself. A CI token may submit and receive a
+# verdict; it may not read either (ADR-0019).
+router = APIRouter(
+    prefix="/api",
+    tags=["findings"],
+    dependencies=[Depends(require_scope(Scope.ADMIN))],
+)
 
 
 @router.get("/runs/{run_id}/findings", response_model=list[FindingOut])

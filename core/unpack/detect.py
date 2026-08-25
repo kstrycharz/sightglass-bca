@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import BinaryIO
 
 
 class Container(StrEnum):
@@ -112,13 +113,65 @@ _PE_INSTALLER_MARKERS: tuple[tuple[bytes, Container], ...] = (
 )
 
 _SNIFF_BYTES = 0x8100
-# Installer markers live in overlay data at the end of the file, which is
-# exactly where a header-only sniff never looks.
+# Installer markers live in the artifact's *overlay* — the appended data that
+# follows the last PE section. A header-only sniff never looks there.
 _TAIL_BYTES = 512 * 1024
+
+# The overlay is where the payload starts, not where the file ends, so the
+# window that matters begins at the overlay offset. Found in the field: a
+# 203 MB NSIS installer was reported as an ordinary PE with no payload,
+# because its "Nullsoft" marker sat a few hundred KB into the overlay — past
+# the head window and far short of the tail one. The scan then reported zero
+# findings on 203 MB of compressed data, which reads as "clean".
+_OVERLAY_BYTES = 256 * 1024
+
+
+def _overlay_offset(handle: BinaryIO, size: int, header: bytes) -> int | None:
+    """Where a PE's appended data begins: the end of its last raw section.
+
+    Returns ``None`` for anything that does not parse as a PE, which is the
+    common case — the caller falls back to head and tail. Deliberately
+    tolerant: a malformed header is a file to sniff differently, not an error
+    to raise, because hostile artifacts are the input here.
+    """
+    try:
+        if len(header) < 0x40 or not header.startswith(b"MZ"):
+            return None
+        pe_offset = int.from_bytes(header[0x3C:0x40], "little")
+        if pe_offset <= 0 or pe_offset > size:
+            return None
+
+        handle.seek(pe_offset)
+        coff = handle.read(24)
+        if len(coff) < 24 or not coff.startswith(b"PE\x00\x00"):
+            return None
+
+        section_count = int.from_bytes(coff[6:8], "little")
+        optional_size = int.from_bytes(coff[20:22], "little")
+        if not 0 < section_count <= 96:
+            return None
+
+        handle.seek(pe_offset + 24 + optional_size)
+        table = handle.read(40 * section_count)
+
+        end = 0
+        for index in range(section_count):
+            entry = table[index * 40 : (index + 1) * 40]
+            if len(entry) < 40:
+                break
+            raw_size = int.from_bytes(entry[16:20], "little")
+            raw_offset = int.from_bytes(entry[20:24], "little")
+            if raw_offset and raw_size:
+                end = max(end, raw_offset + raw_size)
+    except (OSError, ValueError):
+        return None
+
+    return end if 0 < end < size else None
 
 
 def detect(path: Path) -> Detection:
     """Identify the container format of ``path``, if any."""
+    overlay = b""
     try:
         size = path.stat().st_size
         with path.open("rb") as handle:
@@ -128,6 +181,12 @@ def detect(path: Path) -> Detection:
                 tail = handle.read(_TAIL_BYTES)
             else:
                 tail = b""
+
+            if head.startswith(b"MZ"):
+                start = _overlay_offset(handle, size, head)
+                if start is not None:
+                    handle.seek(start)
+                    overlay = handle.read(_OVERLAY_BYTES)
     except OSError as exc:
         return Detection(Container.NONE, 0.0, f"unreadable: {exc}")
 
@@ -153,7 +212,7 @@ def detect(path: Path) -> Detection:
     # A PE that carries an installer payload. Checked last because most PEs are
     # not installers, and the scan is comparatively expensive.
     if head.startswith(b"MZ"):
-        haystack = head + tail
+        haystack = head + overlay + tail
         for marker, container in _PE_INSTALLER_MARKERS:
             if marker in haystack:
                 return Detection(container, 0.85, f"PE containing {marker.decode('latin-1')!r}")

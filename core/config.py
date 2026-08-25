@@ -64,10 +64,38 @@ class Settings(BaseSettings):
     container's cwd."""
     repo_root: Path = Path(".")
     """Used to resolve seccomp profile paths."""
+
+    analyzer_cpus: float = 4.0
+    """CPU quota for an analyzer container, in whole cores.
+
+    Rule matching is CPU-bound regex work over independent files, and the
+    static analyzer parallelises across whatever quota it is given — it reads
+    the cgroup limit rather than the host's core count, so this number is the
+    real throughput knob. Measured on a 502-file .NET tree in the sandbox:
+    23.4s at 1 core, 12.8s at 2, 5.4s at 8.
+
+    Raising it does not widen the isolation boundary: the container still has
+    no network, no capabilities, a read-only rootfs, and a wall-clock timeout
+    with a watchdog behind it. What it bounds is how much CPU a hostile
+    artifact can burn before that timeout fires, which is why it stays a
+    modest default rather than "all of them"."""
+
     reaper_max_age_hours: int = 6
     reaper_interval_seconds: int = 300
 
     # --- trust boundary ---------------------------------------------------
+    auth_required: bool = True
+    """Whether the API demands a token.
+
+    True by default, which is the restrictive direction and the only defensible
+    one: a release gate whose verdict anybody on the network can request, or
+    whose findings anybody can read, is not a control.
+
+    A fresh deployment is not bricked by this — the API mints a bootstrap admin
+    token on first start and prints it once to the log (see
+    `ensure_bootstrap_token`). Set to false only for a single-user local
+    development stack, and never for anything reachable by another host."""
+
     egress_policy: EgressPolicy = EgressPolicy.DENY
     air_gapped: bool = False
     dynamic_analysis_enabled: bool = False

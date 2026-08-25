@@ -22,6 +22,11 @@ dependencies = [
     "structlog==24.4.0",
     "python-multipart==0.0.20",
     "typer==0.15.1",
+    # Pinned below 8.2: click 8.2 changed Parameter.make_metavar() to require a
+    # ctx argument, which typer 0.15.1 does not pass. The resolver is happy to
+    # pick a newer click, and the result is that every `--help` in the CLI dies
+    # with a TypeError while the commands themselves run fine.
+    "click==8.1.8",
     "pyyaml==6.0.2",
 ]
 

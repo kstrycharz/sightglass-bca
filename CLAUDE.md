@@ -2,7 +2,8 @@
 
 The contract between sessions. Update at the end of every working session.
 Keep under ~500 lines; compress old progress entries rather than letting them
-sprawl.
+sprawl. The ADR log lives in [docs/ADR.md](docs/ADR.md) because it is
+append-only and would otherwise consume this budget on its own.
 
 ---
 
@@ -32,16 +33,27 @@ investigates on top of that spine — it never invents a finding.
 ## 2. Current status
 
 **Milestone: M1 — Ingest & static core. Complete. Plus an early slice of M3
-(the Ollama provider and triage), pulled forward so the product is usable.**
+(the Ollama provider and triage) and the M4 release gate, both pulled forward
+so the product is usable in a pipeline.**
 
-Working end to end today: upload an artifact through the dashboard, it is
-scanned in a locked-down container, and deterministic findings appear with
-offsets, encoding, and remediation. Optional AI triage classifies them.
+Working end to end today: upload an artifact through the dashboard or the CLI,
+it is scanned in a locked-down container, and deterministic findings appear
+with offsets, encoding, and remediation. Optional AI triage classifies them.
+A release policy turns those findings into a ship / do-not-ship decision with
+a meaningful exit code, so Sightglass is a build-pipeline stage gate and not
+only a dashboard.
 
 ```bash
 make images && make corpus && make dev
 uv run python scripts/demo.py
+
+# as a release gate
+uv run sightglass policy init
+uv run sightglass scan dist/installer.exe --sarif sightglass.sarif
 ```
+
+See [docs/CICD.md](docs/CICD.md) for the pipeline integration design and
+working workflows for GitHub Actions, GitLab, Azure DevOps, and Jenkins.
 
 See [docs/SETUP.md](docs/SETUP.md) for the full walkthrough.
 
@@ -67,265 +79,284 @@ make install && make sandbox-check     # ./make.ps1 on Windows
 - CI runs lint, mypy strict, unit tests, the isolation suite, a gitleaks scan,
   the web build, and a stack-boots check.
 
-Verified: 102 unit tests, 19 integration tests, `mypy --strict` clean on
+Verified: 269 unit tests, 19 integration tests, `mypy --strict` clean on
 `core/`, `ruff` clean, the frontend builds.
 
-Not yet started: recursive unpacking (M2), Ghidra and dynamic analysis (M5),
-PDF/SARIF/CycloneDX reporting (M4), cloud LLM adapters (M3), MCP servers (M5).
+Not yet started: Ghidra and dynamic analysis (M5), PDF/CycloneDX reporting
+(M4), cloud LLM adapters (M3), MCP servers (M5), API authentication.
 
-**Next milestone: M2 — Unpack tree & correlation.**
+**Next milestone: M4 — reporting (PDF, CycloneDX) on top of the SARIF and
+gate work already landed.**
 
 ---
 
-## 3. Architecture decisions (ADR log)
+## 3. Architecture decisions
 
-Append-only. Supersede rather than edit.
+The full log, with rationale and rejected alternatives, is in [docs/ADR.md](docs/ADR.md).
+Append-only; supersede rather than edit.
 
-### ADR-0001 — Stack is fixed by the brief (2026-08-17)
-Python 3.12, FastAPI + Pydantic v2, Celery + Redis, PostgreSQL 16, MinIO, uv,
-Next.js 15, Docker sandboxes.
-**Rationale:** every serious binary-analysis library is Python-native or
-Python-first (LIEF, pefile, pyelftools, capa, yara-python, binwalk, angr,
-pyghidra). Rewriting that ecosystem elsewhere is the single biggest way to fail
-this project.
-**Rejected:** Go/Rust backend — would mean shelling out to Python for every
-analyzer, losing type safety at exactly the boundary that matters.
+- **ADR-0001** — Stack is fixed by the brief (2026-08-17)
+- **ADR-0002** — Sandbox interface before any analyzer (2026-08-17)
+- **ADR-0003** — The driver removes containers; Docker `--rm` is never used (2026-08-17)
+- **ADR-0004** — Seccomp is an allowlist, applied via inlined JSON (2026-08-17)
+- **ADR-0005** — Tmpfs mounts carry explicit uid/gid/mode (2026-08-17)
+- **ADR-0006** — Windows is a first-class development environment (2026-08-17)
+- **ADR-0007** — Run root is mounted at the same absolute path on host and worker (2026-08-17)
+- **ADR-0008** — Degraded analyzers return results; they do not raise (2026-08-17)
+- **ADR-0009** — The driver translates host paths; it does not require identical mounts (2026-08-17)
+- **ADR-0010** — Findings use a composite primary key (id, run_id) (2026-08-17)
+- **ADR-0011** — The detection engine has no heavy dependencies (2026-08-17)
+- **ADR-0012** — Triage cannot dismiss a finding at or above high severity (2026-08-17)
+- **ADR-0013** — The dashboard proxies the API at runtime, not via a rewrite (2026-08-17)
+- **ADR-0014** — Durations are measured with a monotonic clock (2026-08-17)
+- **ADR-0015** — The release gate is a product surface, not a script (2026-08-18)
+- **ADR-0016** — The gate fails on what the build introduced, not what it inherited (2026-08-18)
+- **ADR-0017** — A model may not open the release gate (2026-08-18)
+- **ADR-0018** — An incomplete scan is INCONCLUSIVE, never a pass (2026-08-18)
+- **ADR-0019** — The policy travels to the server; findings do not travel to CI (2026-08-18)
+- **ADR-0020** — click is pinned below 8.2 (2026-08-18)
+- **ADR-0021** — Rules carry an explicit exclusion list, not negative lookaheads (2026-08-19)
+- **ADR-0022** — The static analyzer parallelises inside one container (2026-08-19)
+- **ADR-0023** — The API authenticates by default, with two scopes (2026-08-24)
 
-### ADR-0002 — Sandbox interface before any analyzer (2026-08-17)
-`SandboxDriver` was written and tested before a single analyzer existed.
-**Rationale:** every analyzer will depend on this boundary, and retrofitting an
-abstraction under N analyzers means rewriting all N. Podman (rootless, required
-by many enterprises) and gVisor must drop in without touching analyzer code.
-**Alternatives rejected:** calling docker-py directly from analyzers, "we'll
-abstract it later".
-
-### ADR-0003 — The driver removes containers; Docker `--rm` is never used (2026-08-17)
-`SandboxSpec.auto_remove` means *the driver* removes the container after
-collecting output. The Docker `AutoRemove` flag is explicitly set to `False`.
-**Rationale:** `--rm` races log collection — the daemon can reap the container
-before we read its output, producing an empty analyzer result with no error.
-The reaper covers what a crash leaks.
-**Rejected:** `--rm` plus a log-streaming attach, which is more moving parts
-for the same guarantee.
-
-### ADR-0004 — Seccomp is an allowlist, applied via inlined JSON (2026-08-17)
-`sandbox/profiles/analyzer.json` denies by default (EPERM) and names the
-permitted syscalls. The driver reads the file and passes its *contents* in
-`security_opt`.
-**Rationale:** a denylist silently admits every syscall a future kernel adds.
-And the Docker CLI reads profile files client-side while the API expects the
-JSON contents — passing a path through the API yields no profile at all, with
-no error, which is the worst possible failure for a security control.
-Socket syscalls are permitted because network isolation is enforced by the
-netns and blocking them breaks libc and the JVM for no gain. `clone3` returns
-ENOSYS rather than EPERM so glibc falls back to `clone`.
-**Follow-up:** the profile is validated against every new analyzer image; Ghidra
-and Wine are the likely sources of surprises.
-
-### ADR-0005 — Tmpfs mounts carry explicit uid/gid/mode (2026-08-17)
-Scratch tmpfs mounts specify `uid=10001,gid=10001,mode=0770`.
-**Rationale:** found by the M0 acceptance check on its first run. A tmpfs masks
-whatever the image did to the underlying directory and is created root-owned
-0755, so an image that carefully chowns `/work` still yields a scratch
-directory the analyzer cannot write to. It presents as a broken analyzer rather
-than a broken mount, which is a bad afternoon.
-**Rejected:** `mode=1777` — world-writable buys nothing in a single-user
-container and reads badly in an audit.
-
-### ADR-0006 — Windows is a first-class development environment (2026-08-17)
-`make.ps1` mirrors every Makefile target.
-**Rationale:** most artifacts Sightglass analyses are Windows binaries, so a
-Windows dev box is not an afterthought, and GNU make is not present by default
-there. The Makefile stays canonical for CI and Linux.
-**Cost:** two files to keep in sync; every new target needs an entry in both.
-
-### ADR-0007 — Run root is mounted at the same absolute path on host and worker (2026-08-17)
-*(Superseded by ADR-0009.)*
-`${SIGHTGLASS_RUN_ROOT}:${SIGHTGLASS_RUN_ROOT}` rather than a named volume.
-**Rationale:** the worker spawns analyzer containers as *siblings* through the
-host Docker socket, and the daemon resolves their bind mounts on the host. A
-path that exists only inside the worker yields analyzers with empty input
-directories and no error at all.
-**Rejected:** running the daemon inside the worker (docker-in-docker) — needs
-`--privileged`, which is a far worse trade than a documented socket mount.
-
-### ADR-0008 — Degraded analyzers return results; they do not raise (2026-08-17)
-`SandboxDriver.run()` returns a `SandboxResult` with a degraded status for
-timeouts, OOMs, and start failures. It raises only for an invalid spec, which
-is programmer error.
-**Rationale:** Ghidra will hang and OOM on real artifacts. That must cost one
-degraded analyzer, not the user's whole scan. The report says which analyzers
-degraded rather than silently reporting "no findings".
-
-### ADR-0009 — The driver translates host paths; it does not require identical mounts (2026-08-17)
-*Supersedes ADR-0007.* The driver holds two views of the run root — `run_root`
-(as the orchestrator sees it) and `host_run_root` (as the daemon sees it) — and
-rewrites bind sources between them.
-**Rationale:** the same-path approach in ADR-0007 is impossible on Windows,
-where a host path is `C:\...` and cannot also be a container path. Docker
-rejects it outright with "too many colons". Translation is more general and
-removes the footgun rather than documenting around it.
-**Rejected:** a named volume, which has no host path the daemon can be given.
-
-### ADR-0010 — Findings use a composite primary key (id, run_id) (2026-08-17)
-`Finding.id` stays content-derived and excludes `run_id`; the table's primary
-key is the pair.
-**Rationale:** content-derived IDs are what make "what is new since the last
-release" a set difference rather than a fuzzy match, so the same secret must
-carry the same id in every release that ships it. That means re-scanning an
-artifact legitimately produces the same id again — a different row, same
-finding. With `id` alone as the primary key the second scan of any artifact
-dies on a unique violation. Finding routes became run-scoped as a consequence,
-which is more correct REST anyway.
-**Rejected:** hashing `run_id` into the id, which would destroy cross-run
-comparability; a surrogate key with a separate `fingerprint` column, which
-leaves the user-visible id meaningless.
-
-### ADR-0011 — The detection engine has no heavy dependencies (2026-08-17)
-`core/rules/` imports only PyYAML and the standard library. `Severity` lives in
-a dependency-free `core/vocab.py`, and `core/__init__.py` is empty of imports.
-**Rationale:** the static analyzer image shares `core.rules` with the host, so
-the scanner that produces findings in production is the exact source the unit
-tests exercise — not a reimplementation that drifts. That only works if the
-import does not drag SQLAlchemy and Pydantic into a sandboxed container.
-**Cost:** one extra module and a re-export; worth it to keep the analyzer image
-at one third-party package.
-
-### ADR-0012 — Triage cannot dismiss a finding at or above high severity (2026-08-17)
-A model verdict of `false_positive` on a `critical` or `high` finding sets
-status to `needs_review`, not `false_positive`.
-**Rationale:** demonstrated in the first live run — the model called a shipped
-private key a false positive, reasoning from a marker in the surrounding text.
-A model is allowed to be wrong; it is not allowed to be wrong in a way that
-hides a shipped private key. Below the floor the model is trusted to reduce
-noise, which is where the value is anyway.
-**Rejected:** trusting verdicts uniformly; requiring human confirmation for
-every verdict, which would defeat the purpose of triage.
-### ADR-0013 — The dashboard proxies the API at runtime, not via a rewrite (2026-08-17)
-Browser calls go through `web/app/api/[...path]/route.ts`, a Route Handler
-using `node:http`. `next.config.ts` declares no `rewrites()`.
-**Rationale:** two failures, both found only by using the UI. Next resolves
-`rewrites()` at *build* time and bakes the result into the routes manifest, so
-an image built without `SIGHTGLASS_API_URL` proxies to `localhost:8000`
-forever — and since server components read the env at runtime, every page
-renders fine and only uploads, triage, and status changes fail with a 500.
-Then `fetch` proved unusable for the proxy itself: Next patches global fetch
-and drops `duplex: "half"`, so a streamed request body fails with a bare
-"fetch failed" while the identical stream works through plain Node.
-`node:http` also pipes uploads instead of buffering them, so a 2 GB installer
-never has to fit in the dashboard's memory.
-**Rejected:** passing the API URL as a build arg (couples the image to one
-deployment topology); calling the API cross-origin with CORS (a findings page
-is a list of a company's exposed secrets).
-
-### ADR-0014 — Durations are measured with a monotonic clock (2026-08-17)
-`SandboxResult.duration_s` is a stored field fed by `time.monotonic()`, not
-`finished_at - started_at`.
-**Rationale:** observed in a real run — Docker Desktop's VM corrected its clock
-mid-scan and a completed stage reported **-42.4 seconds**. Wall clock jumps
-backwards on NTP correction and VM suspend/resume. The timestamps remain for
-display and audit; the number a human reads comes from a clock that only moves
-forward.
 ---
 
 ## 4. Progress log
 
 Reverse-chronological.
 
+### 2026-08-24 — API authentication; `sightglass gate`
+**Built:** `core/auth.py` (token minting, hashing, scope rules — stdlib only,
+no database); the `api_tokens` table; `core/pipeline/tokens.py` for the
+lifecycle; `api/deps.py` with the `get_caller` / `require_scope` dependencies;
+`sightglass token create|list|revoke`; startup bootstrap that mints and prints
+a first admin token so secure-by-default does not brick a fresh stack. The
+dashboard authenticates as itself through the proxy route, server-side, and the
+proxy now strips any `Authorization` the browser sends so a page script cannot
+smuggle its own.
+
+**Also built:** `sightglass gate <run-id>` — re-evaluate a stored run under a
+different policy without re-uploading. The verdict was always a separate call
+for exactly this (ADR-0015); only the CLI verb was missing. `scan` and `gate`
+share one output path so they cannot disagree about a verdict.
+
+**Verified:** 372 unit tests (83 new), mypy strict, ruff clean. The enforcement
+tests enumerate every protected route and assert 401 for anonymous and 403 for
+a `ci` token on the corpus — the failure this feature actually has is "we wrote
+an auth module and forgot to attach it to a router", and only a per-route
+assertion catches that.
+
+**Broke, then fixed:** `parse_bearer("Bearer ")` returned the literal string
+`"Bearer"` as the presented credential, which then failed verification and
+landed in the audit log as though somebody had tried it as a token; the
+"already revoked" error was unreachable because the lookup filtered to active
+tokens first. Both found by the tests, both trivial, both the kind of thing
+that makes an audit trail lie. Enabling auth also broke the nine gate API
+tests, which is the control working — they now mint and present a real
+CI-scoped token, which makes them more realistic than they were.
+
+**Verified over real HTTP.** Docker Desktop would not start this session, so
+instead of settling for TestClient the API was run under uvicorn against
+SQLite and driven with curl and the real CLI: bootstrap banner on first start,
+`/healthz` open, 401 for anonymous and for an unknown token on every `/api`
+route, 200 for the admin token, 200 for a CI token on `/api/runs` and
+`/api/runs/{id}/sarif`, **403** for that same CI token on `/findings` and
+`/settings` with a message naming the scope it lacked, the `X-Sightglass-Token`
+fallback header, revocation taking effect immediately, and the audit log
+holding the whole sequence.
+
+**That run found the bug worth finding.** `ensure_bootstrap_token` was logging
+the full plaintext token into the *structured* log as well as the console
+banner — shipping a live admin credential to whatever aggregates those logs,
+where it is indexed and retained. The banner is the intended one-time
+disclosure; the log line now carries only the prefix, and two tests assert no
+minting path ever puts a plaintext token into logging output. Exactly the
+class of leak this product exists to find in other people's artifacts.
+
+**Then Docker came back and the compose path was verified too.** The bootstrap
+banner appears in `docker compose logs api` exactly as documented; a CI token
+submits and gates but gets 403 on `/findings` and `/settings`; the dashboard
+proxy returns 401 with no token wired and 200 once `SIGHTGLASS_TOKEN` is set,
+and discards a browser-supplied `Authorization` rather than forwarding it. A
+full gated scan ran with a CI token, and `sightglass gate` re-evaluated that
+run under a stricter `mode: all` policy — exit 1, five violations, no
+re-upload. No plaintext token appears anywhere in the service logs.
+
+**And it found a second real bug.** `docker compose exec api sightglass token
+create ...` — the documented way to bootstrap credentials, in both
+`docs/CICD.md` and `.env.example` — failed with "executable file not found in
+$PATH". `deploy/Dockerfile.backend` installs what `pyproject.toml` *requires*
+but never the project itself, so the console script it declares never existed;
+`PYTHONPATH=/app` is why the API ran anyway and why nothing caught it. Fixed
+with a shim on PATH rather than `pip install .`, which would put a second copy
+of the source in site-packages and make "which one is running?" a question.
+
+**Housekeeping:** the ADR log moved to [docs/ADR.md](docs/ADR.md). It is
+append-only by design and had grown to 320 lines, pushing this file to 709 —
+40% past its own stated limit, with no amount of progress-entry compression
+able to fix it. Nothing was edited in the move; §3 keeps a one-line index.
+
+### 2026-08-19 — validated through the real stack; analyzer parallelised
+**Ran the whole thing for real,** which the previous session had not: Docker
+up, images built, compose stack healthy, artifacts uploaded through the API,
+scanned in the sandbox, gated by the CLI. The M0 isolation probe still passes
+from inside the container (not root, read-only rootfs, no TCP, no DNS, no
+userns, no ptrace).
+
+**The gate works end to end.** A real ripgrep release gives PASS, exit 0. A
+planted binary with fabricated credentials gives BLOCKED, exit 1, five
+violations (3 critical, 2 high), with the public GitHub URL correctly
+excluded. SARIF 2.1.0 validates, byte offsets are present, fingerprints match
+the gate's finding ids, and no plaintext reaches the file.
+
+**The data is good, and verified against the bytes.** ripgrep's `rg.exe`
+findings pointed at offsets 3072616, 3200336, 3200488 — every one lands
+exactly on a `C:\Users\runneradmin\.cargo\registry\...` path in the real
+binary. That is a true positive: a release build carrying the CI runner's
+account name. 91 distinct values collapse into one finding with 91 locations.
+The in-process field harness and the real sandboxed pipeline agree rule for
+rule (27 findings on the PowerShell tree, identical breakdown), which
+validates both.
+
+**Found by running it:** the API container was serving an image built before
+`api/routers/gate.py` existed, so every `POST .../gate` returned 404 while the
+scan itself succeeded — invisible to any test, obvious on first deploy.
+
+**Performance.** Profiling contradicted the obvious assumption: container
+spinup is ~0.5s and a scan spawns two containers, so it is ~1s of a 35s job.
+The cost was a sequential per-file loop. Now parallel (ADR-0022): 35.4s to
+13.1s at 4 CPUs, 10.7s at 8, byte-identical output. Recon's extraction is
+split too (9.0s to 2.2s) while its rarity sweep stays central.
+
+**Also confirmed:** the run-root translation footgun is real — pointing
+`SIGHTGLASS_RUN_ROOT` at a Windows path without `SIGHTGLASS_RUN_ROOT_HOST`
+gives the analyzer an empty `/input`. It exits 2 with "no artifacts found"
+rather than reporting a clean scan, which is the right failure.
+
+### 2026-08-19 — detection fixes from the field corpus
+**Built:** `scripts/field_test.py`, which runs the production components
+in-process (`Extractor` → `scan_file` → `correlate` → gate `evaluate`) over a
+directory of real artifacts and reports findings, verdicts, throughput and a
+rule-by-hit table for false-positive triage.
+
+**Corpus:** 7 released artifacts, 105 MB downloaded / 349 MB scanned after
+unpacking — Tari 5.6.0 (Rust/Win), PowerShell 7.6.5 (.NET), syncthing 2.1.3
+(Go), gh 2.97.0 (MSI), ripgrep, fd, jq.
+
+**What it caught that review had not.** Two of seven were **blocked**, both on
+`scm-url` at high, and both were false positives: `git://github.com/dotnet/
+runtime` from .NET `RepositoryUrl` metadata, and a public GitHub API URL from a
+Go binary. A public forge is not internal-infrastructure disclosure, and a gate
+that blocks ordinary clean software on it is one a team switches off. Fixed via
+ADR-0021 with the observed strings as negative fixtures. `private-ip-address`
+also matched `10.00.000.0` — `\d{1,3}` accepts non-octets; now validated.
+A positive control (fabricated but structurally valid credentials in a
+synthetic PE) still yields 3 critical, 3 high and BLOCKED, so the narrowing did
+not hollow the rules out.
+
+**Also fixed:** `.sightglass/` was in `.gitignore`, contradicting ADR-0019 —
+the policy is a committed, reviewed artifact whose git history is the audit
+trail.
+
+### 2026-08-18 — the release gate: Sightglass as a CI/CD stage gate
+**Built:** `core/policy/`, a dependency-light deterministic gate engine
+(severity floor, blocked rules/categories, budgets, baseline comparison,
+expiring waivers, degraded posture) with a shared wire codec;
+`core/pipeline/gate.py`, the ORM bridge and baseline resolver; `POST
+/api/runs/{id}/gate` and `GET /api/runs/{id}/sarif`; `reporting/sarif.py`
+(SARIF 2.1.0, `security-severity`, stable `partialFingerprints`, masked values
+only); `sightglass scan` and `sightglass policy init|validate|explain`; a
+stdlib-only streaming API client so a build agent needs no dependency tree;
+text/JSON/Markdown renderers with GitHub job-summary output; `docs/CICD.md` and
+workflows for GitHub Actions, GitLab, Azure DevOps, and Jenkins.
+
+**Verified:** 269 unit tests (104 new), mypy strict, ruff clean. Tested at four
+levels because each hides the others' failures: the engine alone, the ORM
+bridge against a real schema in SQLite, the endpoints through the real FastAPI
+app, and the CLI end to end over real HTTP against a stub server.
+
+**The three decisions that make it adoptable** are ADR-0016 (fail on what the
+build introduced), ADR-0017 (a model may not open the gate), and ADR-0018 (an
+incomplete scan is INCONCLUSIVE, never a pass).
+
+**Broke, then fixed:** every `--help` in the CLI died on
+`make_metavar() missing 1 required positional argument` — click 8.4.2 against
+typer 0.15.1, predating these commands and surviving because the commands
+themselves run (→ pinned, ADR-0020); the gate joined `finding_locations` to
+`artifacts` for a path that the location already denormalises, so the join was
+both wrong and unnecessary (caught by the SQLite test, exactly what a mocked
+session hides); the API tests all failed "no such table" because each session
+opened its own in-memory SQLite (→ `StaticPool`, and the lifespan is skipped in
+tests where it was dialling a real Postgres).
+
 ### 2026-08-17 — M1 complete, plus the Ollama slice of M3
-**Built:** SQLAlchemy schema (runs, run_manifests, artifacts, evidence,
-findings, finding_locations, audit_log, suppressions, llm_calls); ingest with
-the attestation gate; content-addressed MinIO storage; the detection engine
-(`core/rules/`) with ASCII + UTF-16LE extraction, entropy, masking, and a
-17-rule seed pack with a 44-entry false-positive corpus; the `sightglass/static`
-analyzer image; the correlator (dedupe, scoring, suppressions); the scan
-pipeline and Celery tasks; the full REST API; the Next.js dashboard (runs,
-upload with attestation, run detail with SSE progress, findings explorer with
-the determinism toggle, settings, rules); the Ollama provider with egress
-enforcement and role routing; LLM triage with the severity floor; a synthetic
-corpus builder and `scripts/demo.py`.
+**Built:** the SQLAlchemy schema; ingest with the attestation gate;
+content-addressed MinIO storage; the detection engine (`core/rules/`) with
+ASCII + UTF-16LE extraction, entropy and masking, a 17-rule seed pack and a
+44-entry false-positive corpus; the `sightglass/static` analyzer image; the
+correlator; the scan pipeline and Celery tasks; the REST API; the Next.js
+dashboard; the Ollama provider with egress enforcement; LLM triage with the
+severity floor.
 
-**Verified:** 102 unit tests, mypy strict clean, ruff clean, the frontend
-builds. Full end-to-end against a real stack: upload → sandboxed scan → 9
-findings from 10 evidence rows → triage against qwen2.5-coder:14b on a remote
-Ollama host, 9 candidates in 21.4s. Three of the nine findings are UTF-16LE
-only. The false-positive corpus correctly dropped `AKIAIOSFODNN7EXAMPLE` and
-`127.0.0.1` planted in the corpus.
+**Verified:** 102 unit tests, mypy strict, ruff clean. End to end against a
+real stack: upload → sandboxed scan → 9 findings from 10 evidence rows →
+triage on qwen2.5-coder:14b in 21.4s. Three of the nine were UTF-16LE only.
+The severity floor was *demonstrated*: the model called a shipped private key
+a false positive and was overruled into `needs_review` (ADR-0012), while the
+medium-severity PDB path below the floor was dismissed as asked.
 
-**The severity floor was demonstrated, not just implemented.** The model called
-a shipped private key a false positive; because the rule severity is critical,
-it was demoted to `needs_review` rather than dismissed. The medium-severity PDB
-path, below the floor, was dismissed as the model asked.
-
-**Broke, then fixed:**
-- `Finding.id` is content-derived and deliberately excludes `run_id` so it is
-  comparable across releases — but it was the sole primary key, so re-scanning
-  any artifact died on a unique violation. Now a composite key `(id, run_id)`,
-  and the finding routes are run-scoped, which they should have been anyway.
-- An entry in the false-positive corpus (`service_account`) silently disabled a
-  critical-severity rule, because that rule captures the marker as its value.
-  Caught by the rule self-test. The corpus now documents that entries must be
-  published credential *values*, never structural tokens.
-- `core.rules` transitively imported SQLAlchemy through `core.models`, which
-  would have forced an ORM into the sandboxed analyzer image. Severity moved to
-  a dependency-free `core/vocab.py`; the analyzer image now installs only
-  PyYAML.
-- `config/` was in neither the backend image nor the dev mounts, so triage
-  reported the LLM layer as disabled.
+**Broke, then fixed:** `Finding.id` as a sole primary key died on any re-scan
+(→ composite key, ADR-0010); a false-positive corpus entry silently disabled a
+critical rule by matching its structural marker rather than a credential value;
+`core.rules` transitively imported SQLAlchemy, which would have forced an ORM
+into the analyzer image (→ `core/vocab.py`, ADR-0011); `config/` was in neither
+the backend image nor the dev mounts, so triage reported the LLM as disabled.
 
 ### 2026-08-17 — M0 complete
-**Built:** repo skeleton (§12 layout); `core/sandbox/` in full — `SandboxSpec`
-with isolation guards, `SandboxDriver` ABC, `DockerDriver`, driver-agnostic
-watchdog, reaper, `NotImplementedError` stubs for Podman/gVisor; seccomp
-allowlist; `sightglass/hello:dev` reference analyzer doubling as an isolation
-probe; FastAPI app with `/healthz` and `/readyz`; Celery app with six queues
-and a beat-scheduled reaper sweep; Typer CLI (`sandbox health`,
-`sandbox hello`); compose stack + dev overlay; Makefile + `make.ps1`; GitHub
-Actions CI with six jobs; Next.js status page; README and this file.
+**Built:** repo skeleton; `core/sandbox/` in full — `SandboxSpec`, the
+`SandboxDriver` ABC, `DockerDriver`, watchdog, reaper, Podman/gVisor stubs; the
+seccomp allowlist; the `sightglass/hello:dev` reference analyzer doubling as an
+isolation probe; FastAPI app with health probes; Celery with six queues; the
+compose stack; Makefile + `make.ps1`; CI with six jobs.
 
-**Verified:** 64 unit tests, 17 integration tests, mypy strict clean, ruff
-clean. `sightglass sandbox hello` confirms the boundary from inside the
-container. The watchdog kills a SIGTERM-ignoring container within its deadline.
-A memory hog is stopped rather than swapping the host.
+**Verified:** 64 unit tests, 17 integration tests, mypy strict, ruff clean.
+`sightglass sandbox hello` confirms the boundary from inside the container; the
+watchdog kills a SIGTERM-ignoring container; a memory hog is stopped rather
+than swapping the host.
 
 **Broke, then fixed:** the acceptance check failed on its first run —
-`write_work_tmpfs` returned `PermissionError`. Docker creates tmpfs mounts
-root-owned 0755 regardless of what the image did to the directory underneath.
-Fixed by making ownership explicit in `TmpfsMount` (ADR-0005). This is exactly
-the class of bug the from-inside probe exists to catch, and it would have been
-invisible to a test that only inspected the container's declared config.
+`write_work_tmpfs` returned `PermissionError`, because a tmpfs mount is created
+root-owned 0755 and masks whatever the image did underneath (ADR-0005). Exactly
+the class of bug the from-inside probe exists to catch, and invisible to a test
+that only inspects the container's declared config.
 
 ---
 
 ## 5. Next steps
 
-Top of the queue for M1 — Ingest & static core.
+The gate is landed but not yet deployable to a hostile network, and that is the
+gap that matters most.
 
-1. **Data model and migrations.** SQLAlchemy models for `runs`,
-   `run_manifests`, `artifacts` (self-referencing tree via `parent_id`),
-   `evidence`, `findings`, `finding_locations`, `audit_log`. Alembic baseline.
-   Finding IDs are content-derived from `hash(rule_id + value_hash +
-   artifact_path + offset)` from the first commit — retrofitting stable IDs
-   after findings exist is painful.
-2. **Upload API with the attestation gate.** `POST /api/runs` taking the
-   artifact plus attesting identity, timestamp, and free-text authorization
-   reference. Recorded immutably in `audit_log`, carried into the run manifest.
-   Reject the upload without it; this is a real gate, not a checkbox.
-3. **S0 ingest + S1 identify.** Hash (SHA-256, SSDEEP, TLSH), store in MinIO,
-   dedupe by hash against prior runs. Then LIEF/pefile/pyelftools parsing,
-   architecture, packer/compiler ID, and build metadata — PE Rich header, Go
-   build info, .NET assembly attributes, debug directory and PDB path,
-   code-signing chain and expiry.
-4. **S3 strings + rule scanning.** ASCII *and* UTF-16LE with offset
-   preservation — Windows binaries hide half their secrets in wide strings and
-   a surprising number of tools forget this. Then the YAML rule loader, a first
-   detection pack (AWS keys, private keys, PDB paths), and YARA integration.
-5. **Analyzer protocol.** A uniform `Analyzer` interface over the sandbox
-   driver: build a spec, run, parse `/output/result.json`, emit `Evidence`
-   rows. The hello analyzer becomes its first conformance test.
+1. **API authentication.** `sightglass scan --token` already sends a bearer
+   token; nothing verifies it. Until it does, the deployment must sit inside a
+   perimeter — and a release gate that anyone on the network can query, or
+   whose verdict anyone can request, is not a control. Highest priority.
+2. **Gate the gate in this repo's own CI.** Sightglass should scan its own
+   built artifacts on every release tag. Dogfooding is the fastest way to find
+   out which parts of `docs/CICD.md` are wrong.
+3. **A `sightglass gate` subcommand** for re-evaluating an existing run under a
+   changed policy without re-uploading. The API supports it (that is why the
+   verdict is a separate call from the scan, ADR-0015); only the CLI verb is
+   missing.
+4. **Waiver ergonomics.** The CI output prints finding ids; there is no
+   `sightglass waive <id> --reason ... --expires ...` to append a well-formed
+   entry. Hand-editing YAML under time pressure is where waivers acquire
+   missing owners and absent expiries.
+5. **M4 reporting proper.** PDF for the release record and CycloneDX for the
+   SBOM story. SARIF is done and is what feeds code scanning.
 
-Then the minimal findings-list UI, closing M1's acceptance: upload a corpus
-`.exe`, see a real hardcoded-key finding with correct offsets.
+Then: the run-comparison view in the dashboard, which is the same baseline
+computation the gate already does, surfaced for a human rather than a pipeline.
 
 ---
 
@@ -340,6 +371,11 @@ Then the minimal findings-list UI, closing M1's acceptance: upload a corpus
 | Low | `make corpus` and `make airgap-bundle` exit 1 with a pointer to their milestone (M2, M6). |
 | Low | Base image digests are pinned inline in Dockerfiles. `make refresh-digests` prints current values but does not rewrite them. |
 | Low | No `docker-compose` healthcheck on the workers; a wedged worker is only visible in logs. |
+| Medium | Go binaries store strings in one contiguous blob with no separators, so the printable-run extractor merges adjacent unrelated strings and a regex can match across the seam. Observed: `…per_page=30reflect:` and `dllsecur32.dllshell32.dlluserenv.dlltime`. Affects every rule on Go artifacts; needs a Go-aware string splitter, not a per-rule fix. |
+| Medium | `internal-hostname` matches Go package paths — `eq.internal`, `hash.internal`, `x509.local` — because `internal` is a reserved Go package name. 46 hits in one binary, all noise. Medium severity so it does not block, but it pads the report. |
+| Medium | The release gate has no native GitHub Action or GitLab component; `docs/CICD.md` calls the CLI directly, which works everywhere but is more wiring than a marketplace action. |
+| Medium | `first_seen_run_id` on `Finding` is never populated. The gate computes "is new" from the baseline run's id set instead, which is correct but means the column is dead weight. |
+| Low | `click` is pinned to 8.1.8 to work around typer 0.15.1 (ADR-0020). Revisit when typer supports click 8.2+. |
 | Low | The web dashboard is one status page. No shadcn/ui, TanStack Query, or SSE yet — those arrive with M1's findings list and M4's explorer. |
 
 ---

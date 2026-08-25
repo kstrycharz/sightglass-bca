@@ -31,13 +31,19 @@ web/.turbo/
 dist/
 build/
 /var/
-.sightglass/
 airgap-bundle/
 *.tar.gz
 
 # Synthetic test corpus is BUILT, never committed (sources live in tests/corpus/src)
 tests/corpus/build/
 tests/corpus/out/
+
+# The release policy and its waivers are COMMITTED on purpose: the team that
+# owns the artifact owns the definition of "shippable", and the file's git
+# history is the audit trail for who weakened the gate and when (ADR-0019).
+# Only local scratch under .sightglass/ is ignored.
+.sightglass/cache/
+.sightglass/*.local.yaml
 
 # Tool droppings
 .DS_Store

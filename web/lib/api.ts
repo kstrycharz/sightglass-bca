@@ -167,8 +167,32 @@ export interface TriageResponse {
   model: string;
 }
 
+/**
+ * The dashboard's own credential, for server-side calls only.
+ *
+ * Server components talk to the API directly rather than through the proxy
+ * route, so they have to present the token themselves — without this every
+ * server-rendered page returns "a valid API token is required" the moment
+ * authentication is switched on.
+ *
+ * Never reachable from the browser: this module is imported by both server and
+ * client components, but `process.env` without a `NEXT_PUBLIC_` prefix is
+ * replaced with `undefined` in the client bundle, so the value only exists in
+ * the Node process. Client components go through the proxy route, which
+ * attaches the same token from its own environment.
+ */
+function serverAuthHeaders(): Record<string, string> {
+  if (typeof window !== "undefined") return {};
+  const token = process.env.SIGHTGLASS_TOKEN;
+  return token ? { authorization: `Bearer ${token}` } : {};
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(apiUrl(path), { cache: "no-store", ...init });
+  const response = await fetch(apiUrl(path), {
+    cache: "no-store",
+    ...init,
+    headers: { ...serverAuthHeaders(), ...(init?.headers ?? {}) },
+  });
   if (!response.ok) {
     let detail = response.statusText;
     try {

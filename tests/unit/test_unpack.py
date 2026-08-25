@@ -223,3 +223,73 @@ class TestResilience:
         result = Extractor().extract_tree(broken, tmp_path / "out", root_name="broken.zip")
         assert result.errors
         assert result.nodes == []
+
+
+class TestLargeInstallerDetection:
+    """A PE's installer marker lives at the START of its overlay, not at the
+    end of the file.
+
+    Found in the field: a 203 MB NSIS installer was classified as an ordinary
+    PE with no payload, so nothing was unpacked and the scan reported zero
+    findings on 203 MB of compressed data — which reads as "clean". The head
+    window stopped at 33 KB and the tail window began 512 KB from the end,
+    leaving everything between them unexamined. Installers are the product's
+    headline input, and the bug got *more* likely the bigger they were.
+    """
+
+    @staticmethod
+    def _pe(path: Path, overlay_at: int, total: int, marker: bytes = b"Nullsoft") -> None:
+        buf = bytearray(b"\x00" * total)
+        buf[0:2] = b"MZ"
+        pe = 0x80
+        buf[0x3C:0x40] = pe.to_bytes(4, "little")
+        buf[pe : pe + 4] = b"PE\x00\x00"
+        buf[pe + 6 : pe + 8] = (1).to_bytes(2, "little")
+        buf[pe + 20 : pe + 22] = (0xE0).to_bytes(2, "little")
+        section = pe + 24 + 0xE0
+        buf[section + 16 : section + 20] = (overlay_at - 0x400).to_bytes(4, "little")
+        buf[section + 20 : section + 24] = (0x400).to_bytes(4, "little")
+        buf[overlay_at : overlay_at + len(marker)] = marker
+        path.write_bytes(bytes(buf))
+
+    def test_marker_beyond_the_head_window_is_found(self, tmp_path: Path) -> None:
+        """The regression itself: 5 MB in is past the head and nowhere near
+        the tail."""
+        target = tmp_path / "setup.exe"
+        self._pe(target, overlay_at=5_000_000, total=60_000_000)
+        assert detect(target).container is Container.NSIS
+
+    def test_small_installer_still_detected(self, tmp_path: Path) -> None:
+        target = tmp_path / "setup.exe"
+        self._pe(target, overlay_at=20_000, total=200_000)
+        assert detect(target).container is Container.NSIS
+
+    def test_inno_setup_in_the_overlay(self, tmp_path: Path) -> None:
+        target = tmp_path / "setup.exe"
+        self._pe(target, overlay_at=3_000_000, total=20_000_000, marker=b"Inno Setup")
+        assert detect(target).container is Container.INNO
+
+    def test_ordinary_pe_is_not_an_installer(self, tmp_path: Path) -> None:
+        """The exclusion still has to hold, or every DLL becomes a container."""
+        target = tmp_path / "app.exe"
+        self._pe(target, overlay_at=20_000, total=200_000, marker=b"ordinary bytes")
+        detection = detect(target)
+        assert detection.container is Container.NONE
+        assert detection.should_unpack is False
+
+    def test_truncated_pe_header_does_not_raise(self, tmp_path: Path) -> None:
+        """Hostile artifacts are the input here; a malformed header is a file
+        to sniff differently, not an exception to propagate."""
+        target = tmp_path / "broken.exe"
+        target.write_bytes(b"MZ" + b"\xff" * 4096)
+        assert detect(target).container is Container.NONE
+
+    def test_section_table_pointing_past_eof_is_ignored(self, tmp_path: Path) -> None:
+        target = tmp_path / "liar.exe"
+        self._pe(target, overlay_at=20_000, total=200_000)
+        data = bytearray(target.read_bytes())
+        section = 0x80 + 24 + 0xE0
+        data[section + 20 : section + 24] = (0x7FFFFFFF).to_bytes(4, "little")
+        target.write_bytes(bytes(data))
+        # Must not raise, and must not seek to a nonsense offset.
+        assert detect(target).container in (Container.NONE, Container.NSIS)

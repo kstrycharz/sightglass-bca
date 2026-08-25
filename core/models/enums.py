@@ -109,3 +109,9 @@ class AuditAction(StrEnum):
     LLM_CALL = "llm_call"
     EXPORT = "export"
     CONFIG_CHANGED = "config_changed"
+    TOKEN_CREATED = "token_created"
+    TOKEN_REVOKED = "token_revoked"
+    AUTH_FAILED = "auth_failed"
+    """A rejected credential. Recorded because a burst of these is the first
+    visible sign of someone probing the gate, and a control nobody can audit is
+    not a control."""

@@ -51,6 +51,15 @@ rules:
         capture: 1
       - regex: '(https?://[a-z0-9.\-]{4,80}/[^\s"''<>&]{2,120}\.git)\b'
         capture: 1
+    # A public forge is not internal-infrastructure disclosure. This applies
+    # whatever the scheme: `git://github.com/...` in .NET RepositoryUrl
+    # metadata and `https://api.github.com/repos/...` in a Go binary are both
+    # ordinary build provenance pointing at a public mirror, and blocking a
+    # release on either is how a gate gets switched off. Subdomains are
+    # covered, so `api.github.com` and `raw.githubusercontent.com` are too.
+    rejects_matching:
+      - '://(?:[a-z0-9-]+\.)*(?:github\.com|githubusercontent\.com|gitlab\.com|bitbucket\.org|codeberg\.org|sr\.ht|sourceforge\.net|googlesource\.com|kernel\.org|gitee\.com|savannah\.gnu\.org)[/:]'
+      - '@(?:[a-z0-9-]+\.)*(?:github\.com|gitlab\.com|bitbucket\.org|codeberg\.org|gitee\.com)[/:]'
     tags: [scm, internal-infrastructure, build-metadata]
     tests:
       positive:
@@ -59,6 +68,11 @@ rules:
       negative:
         - "https://github.com/example/project"
         - "https://www.example.com/downloads"
+        # Observed in real shipped binaries during the field test. A public
+        # forge is not internal-infrastructure disclosure, whatever the scheme.
+        - "git://github.com/dotnet/runtime"
+        - "https://api.github.com/repos/syncthing/syncthing/releases?per_page=30"
+        - "git+ssh://git@github.com/example/project.git"
 
   - id: internal-server-hostname
     name: Internal server hostname

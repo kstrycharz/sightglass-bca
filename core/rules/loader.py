@@ -106,6 +106,16 @@ def _build_rule(entry: dict[str, Any], path: Path) -> Rule:
             ) from None
         patterns.append(Pattern(regex=compiled, capture=capture, source=expression))
 
+    rejects: list[re.Pattern[str]] = []
+    for expression in entry.get("rejects_matching", ()) or ():
+        try:
+            rejects.append(re.compile(str(expression), DEFAULT_FLAGS))
+        except re.error as exc:
+            raise RuleLoadError(
+                f"{path.name}: {rule_id}: invalid rejects_matching regex "
+                f"{expression!r}: {exc}"
+            ) from None
+
     tests = entry.get("tests", {}) or {}
     return Rule(
         id=rule_id,
@@ -125,6 +135,7 @@ def _build_rule(entry: dict[str, Any], path: Path) -> Rule:
         requires_nearby=tuple(entry.get("requires_nearby", ())),
         nearby_window=int(entry.get("nearby_window", 120)),
         shape_policy=str(entry.get("shape_policy", "context")),
+        rejects_matching=tuple(rejects),
         require_mixed_case=bool(entry.get("require_mixed_case", False)),
         enabled=bool(entry.get("enabled", True)),
         examples_positive=tuple(tests.get("positive", ())),

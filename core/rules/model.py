@@ -88,6 +88,17 @@ class Rule:
     rules that match on shape alone. ``off`` disables the filter for rules
     whose match *is* structural, like the PEM header."""
 
+    rejects_matching: tuple[re.Pattern[str], ...] = ()
+    """Reject a captured value matching any of these.
+
+    Nearly every "internal infrastructure" rule needs to say "…but not the
+    public equivalent", and expressing that as a negative lookahead inside each
+    pattern makes the pattern unreadable and has to be repeated per pattern.
+    Found in the field: `scm-url` matched `git://github.com/dotnet/runtime` in
+    a shipped .NET assembly, which is build metadata pointing at a public
+    mirror, not disclosure of anyone's build server — and the rule already
+    declared exactly that case as a negative test."""
+
     require_mixed_case: bool = False
     """Require upper + lower + digits. Vendor-issued secrets have this shape;
     a single-class run of the same length is almost always encoded data."""
@@ -99,6 +110,8 @@ class Rule:
     def accepts(self, value: str) -> bool:
         """Post-match gates that are cheaper to express here than in a regex."""
         if not (self.min_length <= len(value) <= self.max_length):
+            return False
+        if any(pattern.search(value) for pattern in self.rejects_matching):
             return False
         return not (self.min_entropy and shannon_entropy(value) < self.min_entropy)
 

@@ -1,0 +1,22 @@
+# Sightglass waivers
+#
+# Copy to `.sightglass/waivers.yaml`. Each entry exempts ONE finding, by its
+# content-derived id, until a date that must be stated.
+#
+# Every field is required by default. That is the point: a waiver is a decision
+# to ship a known exposure, and it should carry a name, a reason, and an end
+# date the way any other risk acceptance does. A waiver with no expiry is a
+# permanent hole that outlives the person who opened it — the loader rejects
+# one rather than defaulting it.
+#
+# Get a finding id from the CI output, the dashboard, or the JSON verdict.
+
+waivers: []
+
+#  - finding_id: 3f2a91c4e8b7d05a1c6e4f8b2d9a7c30
+#    reason: >-
+#      Vendor SDK sample key shipped inside the bundled redistributable.
+#      Confirmed inert with the vendor, tracked in SEC-4471 for removal in
+#      the 2.5 SDK bump.
+#    owner: kyle@example.com
+#    expires: 2026-11-15

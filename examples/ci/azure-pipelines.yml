@@ -1,0 +1,45 @@
+# Sightglass release gate — Azure DevOps
+
+trigger:
+  tags:
+    include: ["v*"]
+
+pool:
+  vmImage: windows-latest
+
+variables:
+  artifact: $(Build.ArtifactStagingDirectory)/installer.exe
+
+steps:
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: "3.12"
+
+  - script: msbuild MyProduct.sln /p:Configuration=Release
+    displayName: Build
+
+  # Not on PyPI yet — pin a tag or use an internal feed.
+  - script: pip install "sightglass @ git+https://dev.azure.com/org/sightglass@v0.0.1"
+    displayName: Install Sightglass CLI
+
+  # The attestation fills itself in from BUILD_REQUESTEDFOR and BUILD_BUILDURI.
+  - script: |
+      sightglass scan "$(artifact)" ^
+        --sarif "$(Build.ArtifactStagingDirectory)/sightglass.sarif" ^
+        --json  "$(Build.ArtifactStagingDirectory)/sightglass.json" ^
+        --timeout 1800
+    displayName: Sightglass release gate
+    env:
+      SIGHTGLASS_API_URL: $(SightglassApiUrl)
+      # A ci-scoped token; see docs/CICD.md section 4.
+      SIGHTGLASS_TOKEN: $(SightglassToken)
+
+  # `always()` — the verdict is most worth keeping on the run that failed.
+  - publish: $(Build.ArtifactStagingDirectory)/sightglass.json
+    artifact: sightglass-verdict
+    condition: always()
+    displayName: Publish verdict
+
+  # Reached only when the gate exits 0.
+  - script: ./scripts/publish.ps1
+    displayName: Publish release
