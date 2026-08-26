@@ -32,21 +32,26 @@ investigates on top of that spine — it never invents a finding.
 
 ## 2. Current status
 
-**Milestone: M1 — Ingest & static core. Complete. Plus an early slice of M3
-(the Ollama provider and triage) and the M4 release gate, both pulled forward
-so the product is usable in a pipeline.**
+**Milestone: M1 — Ingest & static core. Complete. Plus most of M3 (BYOLLM:
+local and cloud providers, triage, explain, summarize, discovery) and the M4
+release gate, both pulled forward so the product is usable in a pipeline.**
 
 Working end to end today: upload an artifact through the dashboard or the CLI,
 it is scanned in a locked-down container, and deterministic findings appear
-with offsets, encoding, and remediation. Optional AI triage classifies them.
-A release policy turns those findings into a ship / do-not-ship decision with
-a meaningful exit code, so Sightglass is a build-pipeline stage gate and not
-only a dashboard.
+with offsets, encoding, and remediation. Optional AI triage classifies them,
+explains individual findings, and summarises a run. A release policy turns
+those findings into a ship / do-not-ship decision with a meaningful exit code,
+so Sightglass is a build-pipeline stage gate and not only a dashboard.
+
+Deployment is two commands and no file editing — the dashboard's first-run
+wizard mints the API token and optionally connects a model:
 
 ```bash
-make images && make corpus && make dev
-uv run python scripts/demo.py
+docker compose build
+docker compose up -d          # then open http://localhost:3000
+```
 
+```bash
 # as a release gate
 uv run sightglass policy init
 uv run sightglass scan dist/installer.exe --sarif sightglass.sarif
@@ -79,11 +84,11 @@ make install && make sandbox-check     # ./make.ps1 on Windows
 - CI runs lint, mypy strict, unit tests, the isolation suite, a gitleaks scan,
   the web build, and a stack-boots check.
 
-Verified: 269 unit tests, 19 integration tests, `mypy --strict` clean on
-`core/`, `ruff` clean, the frontend builds.
+Verified: 536 unit tests, 19 integration tests, `mypy --strict` clean on
+`core/`, `ruff` clean, `next build` clean.
 
-Not yet started: Ghidra and dynamic analysis (M5), PDF/CycloneDX reporting
-(M4), cloud LLM adapters (M3), MCP servers (M5), API authentication.
+Not yet started: Ghidra and dynamic analysis (M5), MCP servers (M5), the
+`remediate` role, and a Bedrock adapter (SigV4, unlike every other provider).
 
 **Next milestone: M4 — reporting (PDF, CycloneDX) on top of the SARIF and
 gate work already landed.**
@@ -127,6 +132,143 @@ Append-only; supersede rather than edit.
 ## 4. Progress log
 
 Reverse-chronological.
+
+### 2026-08-26 (3) — the AI layer that was configurable but never called
+**The finding that set the agenda.** `grep 'role="'` across the codebase
+returned two hits. `config/llm.yaml` routed five roles and the settings page
+described each one confidently, but only `triage` and `discover` had a caller —
+`explain`, `remediate`, and `summarize` were dead config. An operator could
+point a model at "summarize", be told it was healthy, and never see output,
+because nothing invoked it. That is the whole of "the AI summaries aren't clear
+where they are or what they're doing": there were no summaries.
+
+**Built:** `core/llm/explain.py` — the `explain` and `summarize` roles, with
+`explain_finding_task` / `summarize_run_task`, `POST
+/api/runs/{id}/findings/{fid}/explain` and `POST /api/runs/{id}/summarize`,
+migration `0003` for the columns to live in, and UI for both. Explain is
+per-finding on request, not per-run: it routes to a reasoning model by default
+and running it over 45 findings would cost more than the scan. Every AI panel
+now names its role, its model, and when it ran.
+
+`llm_explanation` is deliberately not `llm_reasoning`. Reasoning is triage's
+justification for a status change and part of that audit trail; reusing the
+column would mean asking for an explanation destroyed the record of why a
+finding was dismissed. A test pins it.
+
+**The token-budget bug, diagnosed.** Triage caps output at 300 tokens, which is
+right for a one-line JSON verdict from a fast model and catastrophic for a
+reasoning model, which spends the whole budget thinking and returns nothing.
+The new roles ask for 4000 and, when a model still returns empty with a
+`thinking` field, say *which* failure it was and how to fix it. Separately,
+`config/llm.yaml` pointed at `glm-4.7-flash:bf16`, which was never pulled on
+the Ollama host — `q4_K_M` was. Health said so plainly; nothing had read it.
+
+**Cloud providers, and the wizard step for them.** `openai_compatible.py`
+(OpenAI, Groq, OpenRouter, Together, vLLM, LM Studio, Azure), `anthropic.py`,
+and `google.py`, wired into `build_provider`, plus `core/llm/catalog.py`
+driving a second wizard step with a prominent skip — a model is genuinely
+optional. The connection is tested *before* anything is written, so "connected"
+means it; a rejected key is rolled back out of the store rather than left
+behind. Verified against a live Ollama host and a deliberately-bad OpenAI key
+(401 → refused, key store left `{}`).
+
+**Keys never touch `config/llm.yaml`.** That file is committed, and a provider
+key in it is a credential in the repository — the exact failure this product
+exists to find in other people's artifacts. Keys resolve from an env var first,
+then a 0600 runtime store (`core/llm/secrets.py`). Adapter error strings are
+scrubbed of the key before they reach a log or the settings page.
+
+**Then the bug that made all of it pointless.** The wizard wrote to
+`config/llm.yaml` under `repo_root` — which is baked into the image, so every
+`docker compose build` silently discarded whatever the operator had configured,
+and `/app/data` had no volume mounted on the backend at all, so the key store
+did not survive a container recreate either. The live config and keys now live
+in a `backend-data` volume shared by the API and both workers, seeded from the
+packaged default on first use. **Verified by doing it:** configured a provider,
+rebuilt the image, recreated the container, confirmed it was still there.
+
+**Also fixed:** the wizard's "Continue to dashboard" did nothing. Middleware had
+redirected `/` → `/setup` and Next's client router cached that redirect, so
+`router.push("/")` replayed it and landed back on the same page. It now leaves
+with a full page load, which is correct rather than a workaround — completing
+setup changes the server state the entire cache was built under. Reopening
+`/setup` on a configured deployment used to 409 and strand you; it now advances
+to the model step.
+
+**Caught by building, not by type-checking.** Wiring the persisted token into
+`lib/api.ts` pulled `node:fs` into the client bundle twice, because that module
+is imported by client components. `tsc --noEmit` passes; only `next build`
+fails. The rule is now written down in the file itself: `api` is server-only,
+client components use a bare `fetch` through the proxy.
+
+**Verified:** 536 unit tests (21 new), mypy strict, ruff clean, a real
+`next build`, and a live `explain` call returning grounded prose in 33s.
+
+
+### 2026-08-26 (2) — a fresh deployment could not start; setup moved into the dashboard
+**The failure that set the agenda.** Destroying the compose volumes to verify
+a clean bring-up crash-looped the API on the very first migration:
+`relation "runs" does not exist` while creating `artifacts`. `0001_baseline`
+created `artifacts` (which references `runs`) eleven tables before it created
+`runs` — a real cycle, not just the wrong order, since `runs.root_artifact_id`
+points back at `artifacts`. Every deployment so far had reached this migration
+either via the old `create_all()` bootstrap (stamped at baseline, never
+replayed) or already past it, so a truly empty database was the first thing
+ever to run this path for real. Fixed by creating `runs` first, without that
+one column's constraint, and closing it with `op.batch_alter_table` once
+`artifacts` exists — batch mode because Postgres runs that as a plain ALTER
+but SQLite has no ALTER-ADD-CONSTRAINT at all, only the recreate-and-copy batch
+mode performs.
+
+**The unit suite could not have caught it, structurally.** It migrates SQLite
+by design (no Docker, portable), and SQLite accepts a `CREATE TABLE` whose
+foreign key targets a table that does not exist yet — it validates FK targets
+lazily, never at DDL time. Postgres validates immediately. Added
+`TestForeignKeyOrdering` in `tests/unit/test_migrations.py`: it renders every
+migration's DDL for the **postgresql dialect** via Alembic's own `--sql`
+offline mode — real SQL text, no database — and replays the ordering rule
+Postgres actually enforces, both directions. Confirmed against the original
+file (`git stash`) that both new tests fail on the bug and pass on the fix.
+
+**Then the deploy-simplicity gap.** Getting the stack running again needed a
+manually-minted token, because the only other admin token had been minted by
+an earlier crash-loop retry and its one-time console banner had already
+scrolled past — unrecoverable by design (ADR-0024's era), just at an
+inconvenient moment. That prompted the actual ask: remove the `.env`-and-CLI
+onboarding step entirely. `ensure_bootstrap_token`'s automatic call at startup
+is gone; `POST /api/setup/bootstrap` (`api/routers/setup.py`) exposes the same
+one-shot mint over HTTP instead — unauthenticated by construction, but safe,
+because the guard is "no token exists yet," the same fact the console version
+already gated on. The dashboard's `middleware.ts` checks `GET
+/api/setup/status` ahead of every page and redirects a deployment with no
+tokens to `/setup`, a one-step wizard that mints, shows the token once, and
+hands the user back to a dashboard that already works.
+
+**"Already works" needed its own fix.** Server components fetch the API
+directly rather than through the Next.js proxy (`lib/api.ts`), and that path
+read `SIGHTGLASS_TOKEN` from the environment only — so the wizard could mint a
+token and the very next page load would still say "a valid API token is
+required." `lib/runtime-token.ts` now resolves the token from the env var
+first, falling back to a file the wizard persists to a new `web-data` volume,
+so a container *restart* does not ask again. Wiring it into `lib/api.ts`
+broke the client production build outright — `node:fs` doesn't resolve in a
+browser bundle, and that file is imported by client components for its types.
+The fix was `npm run build`, not `tsc --noEmit`: type-checking alone never
+sees a bundler resolve failure. Traced it to one non-type import
+(`SEVERITY_ORDER`, used by the client-side findings explorer) pulling the
+whole module graph in; split it into `lib/severity.ts`, which has no
+server-only dependency, and the client build is clean again.
+
+**Verified against a real clean-slate deploy**, the scenario that started
+this: `docker compose down --volumes`, rebuild every image, `up`. Migration
+ran to head on the first try. Dashboard opened on `/setup` automatically,
+minted a token, and every page — the proxy path and the direct server-render
+path — worked immediately after, including across a full `docker compose
+restart web`, without touching `.env`.
+
+**Verified:** 500 unit tests (9 new), mypy strict, ruff clean, `tsc` clean, a
+real `next build` (which is what actually caught the bundling break).
+
 
 ### 2026-08-26 — a progress bar that reports work, not time
 **Built:** live scan progress. Five phases derived from stage rows — queued,
@@ -245,194 +387,115 @@ the ORM will select exists after migrating — rather than that the migration ra
 
 
 ### 2026-08-24 — API authentication; `sightglass gate`
-**Built:** `core/auth.py` (token minting, hashing, scope rules — stdlib only,
-no database); the `api_tokens` table; `core/pipeline/tokens.py` for the
-lifecycle; `api/deps.py` with the `get_caller` / `require_scope` dependencies;
-`sightglass token create|list|revoke`; startup bootstrap that mints and prints
-a first admin token so secure-by-default does not brick a fresh stack. The
-dashboard authenticates as itself through the proxy route, server-side, and the
-proxy now strips any `Authorization` the browser sends so a page script cannot
-smuggle its own.
+**Built:** `core/auth.py` (minting, hashing, scope rules; stdlib only), the
+`api_tokens` table, `api/deps.py` with `get_caller` / `require_scope`,
+`sightglass token create|list|revoke`, a startup bootstrap so secure-by-default
+does not brick a fresh stack, and `sightglass gate <run-id>` to re-evaluate a
+stored run under a different policy without re-uploading. The dashboard
+authenticates as itself server-side, and the proxy strips any `Authorization`
+the browser sends so a page script cannot smuggle its own (ADR-0023).
 
-**Also built:** `sightglass gate <run-id>` — re-evaluate a stored run under a
-different policy without re-uploading. The verdict was always a separate call
-for exactly this (ADR-0015); only the CLI verb was missing. `scan` and `gate`
-share one output path so they cannot disagree about a verdict.
+**Verified over real HTTP**, not TestClient: 401 anonymous and for an unknown
+token on every `/api` route, 200 for admin, **403** for a CI token on
+`/findings` and `/settings` naming the scope it lacked, revocation effective
+immediately, and the audit log holding the sequence. 372 unit tests (83 new).
 
-**Verified:** 372 unit tests (83 new), mypy strict, ruff clean. The enforcement
-tests enumerate every protected route and assert 401 for anonymous and 403 for
-a `ci` token on the corpus — the failure this feature actually has is "we wrote
-an auth module and forgot to attach it to a router", and only a per-route
-assertion catches that.
+**That run found the bug worth finding.** `ensure_bootstrap_token` logged the
+full plaintext token into the *structured* log as well as the console banner —
+shipping a live admin credential to whatever aggregates those logs. The banner
+is the intended one-time disclosure; the log line now carries only the prefix,
+and two tests assert no minting path puts plaintext into logging output.
+Exactly the class of leak this product exists to find.
 
-**Broke, then fixed:** `parse_bearer("Bearer ")` returned the literal string
-`"Bearer"` as the presented credential, which then failed verification and
-landed in the audit log as though somebody had tried it as a token; the
-"already revoked" error was unreachable because the lookup filtered to active
-tokens first. Both found by the tests, both trivial, both the kind of thing
-that makes an audit trail lie. Enabling auth also broke the nine gate API
-tests, which is the control working — they now mint and present a real
-CI-scoped token, which makes them more realistic than they were.
+**And a second real one:** `docker compose exec api sightglass token create` —
+the documented bootstrap path — failed with "executable file not found".
+`Dockerfile.backend` installed what `pyproject.toml` requires but never the
+project, so its console script never existed; `PYTHONPATH=/app` is why the API
+ran anyway and nothing caught it. Fixed with a shim rather than `pip install .`,
+which would put a second copy of the source in site-packages.
 
-**Verified over real HTTP.** Docker Desktop would not start this session, so
-instead of settling for TestClient the API was run under uvicorn against
-SQLite and driven with curl and the real CLI: bootstrap banner on first start,
-`/healthz` open, 401 for anonymous and for an unknown token on every `/api`
-route, 200 for the admin token, 200 for a CI token on `/api/runs` and
-`/api/runs/{id}/sarif`, **403** for that same CI token on `/findings` and
-`/settings` with a message naming the scope it lacked, the `X-Sightglass-Token`
-fallback header, revocation taking effect immediately, and the audit log
-holding the whole sequence.
-
-**That run found the bug worth finding.** `ensure_bootstrap_token` was logging
-the full plaintext token into the *structured* log as well as the console
-banner — shipping a live admin credential to whatever aggregates those logs,
-where it is indexed and retained. The banner is the intended one-time
-disclosure; the log line now carries only the prefix, and two tests assert no
-minting path ever puts a plaintext token into logging output. Exactly the
-class of leak this product exists to find in other people's artifacts.
-
-**Then Docker came back and the compose path was verified too.** The bootstrap
-banner appears in `docker compose logs api` exactly as documented; a CI token
-submits and gates but gets 403 on `/findings` and `/settings`; the dashboard
-proxy returns 401 with no token wired and 200 once `SIGHTGLASS_TOKEN` is set,
-and discards a browser-supplied `Authorization` rather than forwarding it. A
-full gated scan ran with a CI token, and `sightglass gate` re-evaluated that
-run under a stricter `mode: all` policy — exit 1, five violations, no
-re-upload. No plaintext token appears anywhere in the service logs.
-
-**And it found a second real bug.** `docker compose exec api sightglass token
-create ...` — the documented way to bootstrap credentials, in both
-`docs/CICD.md` and `.env.example` — failed with "executable file not found in
-$PATH". `deploy/Dockerfile.backend` installs what `pyproject.toml` *requires*
-but never the project itself, so the console script it declares never existed;
-`PYTHONPATH=/app` is why the API ran anyway and why nothing caught it. Fixed
-with a shim on PATH rather than `pip install .`, which would put a second copy
-of the source in site-packages and make "which one is running?" a question.
-
-**Housekeeping:** the ADR log moved to [docs/ADR.md](docs/ADR.md). It is
-append-only by design and had grown to 320 lines, pushing this file to 709 —
-40% past its own stated limit, with no amount of progress-entry compression
-able to fix it. Nothing was edited in the move; §3 keeps a one-line index.
+**Housekeeping:** the ADR log moved to [docs/ADR.md](docs/ADR.md); §3 keeps a
+one-line index.
 
 ### 2026-08-19 — validated through the real stack; analyzer parallelised
-**Ran the whole thing for real,** which the previous session had not: compose
+**Ran the whole thing for real**, which the previous session had not: compose
 stack healthy, artifacts uploaded through the API, scanned in the sandbox,
-gated by the CLI. The M0 isolation probe still passes from inside the container.
+gated by the CLI. A real ripgrep release gives PASS/0; a planted binary gives
+BLOCKED/1 with five violations and the public GitHub URL correctly excluded.
+SARIF 2.1.0 validates, byte offsets present, fingerprints match, no plaintext
+reaches the file.
 
-**The gate works end to end.** A real ripgrep release gives PASS, exit 0. A
-planted binary with fabricated credentials gives BLOCKED, exit 1, five
-violations, with the public GitHub URL correctly excluded. SARIF 2.1.0
-validates, byte offsets are present, fingerprints match the gate's finding ids,
-and no plaintext reaches the file.
-
-**The data is verified against the bytes.** ripgrep findings at offsets
-3072616, 3200336, 3200488 each land exactly on a
-`C:\Users\runneradmin\.cargo\registry\...` path — a release build carrying the
-CI runner's account name. 91 distinct values collapse into one finding with 91
-locations. The in-process field harness and the sandboxed pipeline agree rule
-for rule (27 findings on the PowerShell tree), validating both.
+**Data verified against the bytes:** ripgrep findings at offsets 3072616,
+3200336, 3200488 each land on a cargo registry path under the CI runner's own
+home directory — a release build carrying the runner's account name. 91
+distinct values collapse into one finding with 91 locations.
 
 **Found by running it:** the API container was serving an image built before
 `api/routers/gate.py` existed, so every `POST .../gate` returned 404 while the
-scan itself succeeded — invisible to any test, obvious on first deploy.
+scan succeeded — invisible to any test, obvious on first deploy.
 
 **Performance.** Profiling contradicted the obvious assumption: container
-spinup is ~0.5s across two containers, ~1s of a 35s job. The cost was a
-sequential per-file loop. Now parallel (ADR-0022): 35.4s to 13.1s at 4 CPUs,
-10.7s at 8, byte-identical output. Recon's extraction is split too (9.0s to
-2.2s) while its rarity sweep stays central.
+spinup is ~1s of a 35s job; the cost was a sequential per-file loop. Now
+parallel (ADR-0022): 35.4s to 13.1s at 4 CPUs, 10.7s at 8, byte-identical
+output.
 
-**Also confirmed:** pointing `SIGHTGLASS_RUN_ROOT` at a Windows path without
-`SIGHTGLASS_RUN_ROOT_HOST` gives the analyzer an empty `/input`. It exits 2
-with "no artifacts found" rather than reporting a clean scan — the right
-failure.
-
-
-### 2026-08-19 — detection fixes from the field corpus
-**Built:** `scripts/field_test.py`, which runs the production components
-in-process (`Extractor` → `scan_file` → `correlate` → gate `evaluate`) over a
-directory of real artifacts and reports findings, verdicts, throughput and a
-rule-by-hit table for false-positive triage.
-
-**Corpus:** 7 released artifacts, 105 MB downloaded / 349 MB scanned after
-unpacking — Tari 5.6.0 (Rust/Win), PowerShell 7.6.5 (.NET), syncthing 2.1.3
-(Go), gh 2.97.0 (MSI), ripgrep, fd, jq.
-
-**What it caught that review had not.** Two of seven were **blocked**, both on
-`scm-url` at high, and both were false positives: `git://github.com/dotnet/
-runtime` from .NET `RepositoryUrl` metadata, and a public GitHub API URL from a
-Go binary. A public forge is not internal-infrastructure disclosure, and a gate
-that blocks ordinary clean software on it is one a team switches off. Fixed via
-ADR-0021 with the observed strings as negative fixtures. `private-ip-address`
-also matched `10.00.000.0` — `\d{1,3}` accepts non-octets; now validated.
-A positive control (fabricated but structurally valid credentials in a
-synthetic PE) still yields 3 critical, 3 high and BLOCKED, so the narrowing did
-not hollow the rules out.
-
-**Also fixed:** `.sightglass/` was in `.gitignore`, contradicting ADR-0019 —
-the policy is a committed, reviewed artifact whose git history is the audit
-trail.
+**Detection fixes from a field corpus** of 7 released artifacts (105 MB
+downloaded, 349 MB scanned): two of seven were **blocked** on `scm-url` at
+high, both false positives — a `git://` URL from .NET repository metadata and a
+public GitHub API URL from a Go binary. A public forge is not
+internal-infrastructure disclosure, and a gate that blocks ordinary clean
+software is one a team switches off. Fixed via ADR-0021 with the observed
+strings as negative fixtures. `private-ip-address` also matched `10.00.000.0`;
+octets are now validated. A positive control still yields BLOCKED, so the
+narrowing did not hollow the rules out.
 
 ### 2026-08-18 — the release gate: Sightglass as a CI/CD stage gate
-**Built:** `core/policy/`, a dependency-light deterministic gate engine
-(severity floor, blocked rules/categories, budgets, baseline comparison,
-expiring waivers, degraded posture) with a shared wire codec;
-`core/pipeline/gate.py`, the ORM bridge and baseline resolver; `POST
-/api/runs/{id}/gate` and `GET /api/runs/{id}/sarif`; `reporting/sarif.py`
-(SARIF 2.1.0, `security-severity`, stable `partialFingerprints`, masked values
-only); `sightglass scan` and `sightglass policy init|validate|explain`; a
-stdlib-only streaming API client so a build agent needs no dependency tree;
-text/JSON/Markdown renderers with GitHub job-summary output; `docs/CICD.md` and
-workflows for GitHub Actions, GitLab, Azure DevOps, and Jenkins.
+**Built:** `core/policy/` (severity floor, blocked rules/categories, budgets,
+baseline comparison, expiring waivers, degraded posture); `core/pipeline/gate.py`;
+`POST /api/runs/{id}/gate` and `GET /api/runs/{id}/sarif`; `reporting/sarif.py`
+(SARIF 2.1.0, stable `partialFingerprints`, masked values only); `sightglass
+scan` and `policy init|validate|explain`; a stdlib-only streaming API client so
+a build agent needs no dependency tree; `docs/CICD.md` and workflows for GitHub
+Actions, GitLab, Azure DevOps, and Jenkins.
 
-**Verified:** 269 unit tests (104 new), mypy strict, ruff clean. Tested at four
-levels because each hides the others' failures: the engine alone, the ORM
-bridge against a real schema in SQLite, the endpoints through the real FastAPI
-app, and the CLI end to end over real HTTP against a stub server.
+**Verified:** 269 unit tests (104 new). Tested at four levels because each
+hides the others' failures: the engine alone, the ORM bridge against a real
+schema, the endpoints through the real app, and the CLI over real HTTP.
 
 **The three decisions that make it adoptable** are ADR-0016 (fail on what the
 build introduced), ADR-0017 (a model may not open the gate), and ADR-0018 (an
 incomplete scan is INCONCLUSIVE, never a pass).
 
-**Broke, then fixed:** every `--help` in the CLI died on
-`make_metavar() missing 1 required positional argument` — click 8.4.2 against
-typer 0.15.1, predating these commands and surviving because the commands
-themselves run (→ pinned, ADR-0020); the gate joined `finding_locations` to
-`artifacts` for a path that the location already denormalises, so the join was
+**Broke, then fixed:** every `--help` died on `make_metavar()` — click 8.4.2
+against typer 0.15.1 (→ pinned, ADR-0020); the gate joined `finding_locations`
+to `artifacts` for a path the location already denormalises, so the join was
 both wrong and unnecessary (caught by the SQLite test, exactly what a mocked
 session hides); the API tests all failed "no such table" because each session
-opened its own in-memory SQLite (→ `StaticPool`, and the lifespan is skipped in
-tests where it was dialling a real Postgres).
+opened its own in-memory SQLite (→ `StaticPool`).
 
 ### 2026-08-17 — M0 and M1 complete, plus the Ollama slice of M3
-**M0 built:** `core/sandbox/` in full — `SandboxSpec`, the `SandboxDriver` ABC,
-`DockerDriver`, watchdog, reaper, Podman/gVisor stubs; the seccomp allowlist;
-the `sightglass/hello:dev` probe; FastAPI health probes; Celery with six
-queues; the compose stack; Makefile + `make.ps1`; CI with six jobs.
+**M0:** the sandbox stack in full (`SandboxSpec`, `DockerDriver`, watchdog,
+reaper, seccomp allowlist, the `hello:dev` probe), health probes, six-queue
+Celery, the compose stack, `make.ps1`, six-job CI. **M1:** the schema; ingest
+with the attestation gate; content-addressed MinIO storage; the detection
+engine (ASCII + UTF-16LE, entropy/masking, 17 rules, a 44-entry FP corpus);
+the static analyzer image; the correlator; the scan pipeline; the REST API and
+Next.js dashboard; the Ollama provider with egress enforcement; LLM triage
+with the severity floor.
 
-**M1 built:** the SQLAlchemy schema; ingest with the attestation gate;
-content-addressed MinIO storage; the detection engine (`core/rules/`) with
-ASCII + UTF-16LE extraction, entropy and masking, a 17-rule seed pack and a
-44-entry false-positive corpus; the `sightglass/static` analyzer image; the
-correlator; the scan pipeline and Celery tasks; the REST API; the Next.js
-dashboard; the Ollama provider with egress enforcement; LLM triage with the
-severity floor.
+**Verified:** 102 unit / 17 integration tests, mypy strict, ruff clean. Upload
+→ sandboxed scan → 9 findings from 10 evidence rows → triage in 21.4s; three
+findings were UTF-16LE only. The severity floor was demonstrated: the model
+called a shipped private key a false positive and was overruled into
+`needs_review` (ADR-0012).
 
-**Verified:** 102 unit tests, 17 integration tests, mypy strict, ruff clean.
-Upload → sandboxed scan → 9 findings from 10 evidence rows → triage on
-qwen2.5-coder:14b in 21.4s; three of the nine were UTF-16LE only. The severity
-floor was *demonstrated*: the model called a shipped private key a false
-positive and was overruled into `needs_review` (ADR-0012).
-
-**Broke, then fixed:** a tmpfs mount is created root-owned 0755 and masks
-whatever the image did underneath, so the very first acceptance run failed
-(ADR-0005) — the class of bug the from-inside probe exists to catch;
-`Finding.id` as a sole primary key died on any re-scan (→ composite key,
-ADR-0010); a false-positive corpus entry silently disabled a critical rule by
-matching its structural marker rather than a credential value; `core.rules`
-transitively imported SQLAlchemy, which would have forced an ORM into the
-analyzer image (→ `core/vocab.py`, ADR-0011).
+**Broke, then fixed:** a tmpfs mount is root-owned 0755 and masks the image's
+own chown underneath it, failing the first acceptance run (ADR-0005);
+`Finding.id` alone as a primary key died on any re-scan (→ composite key,
+ADR-0010); a FP-corpus entry matched a rule's structural marker instead of a
+credential value, silently disabling it; `core.rules` transitively imported
+SQLAlchemy, which would have forced an ORM into the analyzer image (→
+`core/vocab.py`, ADR-0011).
 
 ---
 
@@ -482,7 +545,10 @@ computation the gate already does, surfaced for a human rather than a pipeline.
 | Medium | The release gate has no native GitHub Action or GitLab component; `docs/CICD.md` calls the CLI directly, which works everywhere but is more wiring than a marketplace action. |
 | Medium | `first_seen_run_id` on `Finding` is never populated. The gate computes "is new" from the baseline run's id set instead, which is correct but means the column is dead weight. |
 | Low | `click` is pinned to 8.1.8 to work around typer 0.15.1 (ADR-0020). Revisit when typer supports click 8.2+. |
-| Low | The web dashboard is one status page. No shadcn/ui, TanStack Query, or SSE yet — those arrive with M1's findings list and M4's explorer. |
+| Medium | Plaintext retention has no TTL and no auto-purge, and nothing encrypts it at rest. A run scanned with "Retain full plaintext values" leaves real secrets in Postgres indefinitely. The UI says so at the point of choosing, but §9 promises a TTL that does not exist yet. |
+| Medium | The `remediate` role is routable and described in the settings UI as not-yet-wired, but nothing calls it. Either wire it or drop it from `EDITABLE_ROLES`. |
+| Low | `explain` and `summarize` have no cache: asking twice costs two calls. Triage caches by prompt hash within a pass; these do not, because they are user-initiated and low-volume. |
+| Low | Cloud provider adapters are unit-tested against their wire shapes but only OpenAI has been exercised against the live API (a deliberate 401). Anthropic and Google are untested end to end. |
 
 ---
 

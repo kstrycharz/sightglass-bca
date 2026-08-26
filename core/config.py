@@ -65,6 +65,12 @@ class Settings(BaseSettings):
     repo_root: Path = Path(".")
     """Used to resolve seccomp profile paths."""
 
+    data_dir: Path = Path("/app/data")
+    """Mutable state that must outlive a rebuild: the live LLM config and the
+    provider key store. Everything under `repo_root` is baked into the image,
+    so anything written there is discarded by the next `docker compose build` —
+    which would silently throw away whatever the setup wizard configured."""
+
     analyzer_cpus: float = 4.0
     """CPU quota for an analyzer container, in whole cores.
 
@@ -140,7 +146,7 @@ class Settings(BaseSettings):
     default_attested_by: str = "prototype"
     default_attestation_reference: str = "Prototyping phase - attestation gate disabled"
 
-    @field_validator("run_root", "repo_root")
+    @field_validator("run_root", "repo_root", "data_dir")
     @classmethod
     def _absolute(cls, value: Path) -> Path:
         return value.expanduser().resolve()

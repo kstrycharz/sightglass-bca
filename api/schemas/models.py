@@ -115,6 +115,11 @@ class RunDetail(RunSummary):
     summary remains exact."""
     previous_run_id: str | None = None
 
+    # Advisory, from the `summarize` role. Null until someone asks for it.
+    llm_summary: str | None = None
+    llm_summary_model: str | None = None
+    llm_summary_at: datetime | None = None
+
 
 class LocationOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -166,9 +171,25 @@ class FindingOut(BaseModel):
     locations: list[LocationOut] = Field(default_factory=list)
     location_count: int = 0
 
+    # Null unless the run that produced this finding opted into plaintext
+    # retention (`retain_plaintext`) *and* the finding's own evidence has a
+    # surviving unmasked value. Every route in this router already requires
+    # ADMIN scope (ADR-0019) — this is not an additional exposure surface, it
+    # is the retrieval path for a value that was already sitting in the
+    # database with no other way to read it back.
+    value_plaintext: str | None = None
+
     # Advisory. Null when triage has not run, and hidden entirely by the
     # dashboard's deterministic-view toggle.
     llm: LlmAssessment | None = None
+
+    # Advisory, from the `explain` role. Separate from `llm` above because it
+    # answers a different question and, by default, comes from a different
+    # model — which is why the model that wrote it is carried alongside it
+    # rather than assumed to be the triage one.
+    llm_explanation: str | None = None
+    llm_explained_by: str | None = None
+    llm_explained_at: datetime | None = None
 
 
 class FindingPatch(BaseModel):
@@ -204,6 +225,21 @@ class TriageResponse(BaseModel):
     errors: int
     duration_s: float
     model: str
+
+
+class ExplainResponse(BaseModel):
+    run_id: str
+    finding_id: str
+    explanation: str
+    model: str
+    duration_s: float
+
+
+class SummaryResponse(BaseModel):
+    run_id: str
+    summary: str
+    model: str
+    duration_s: float
 
 
 class RunCreated(BaseModel):

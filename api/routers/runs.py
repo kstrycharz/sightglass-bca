@@ -16,11 +16,13 @@ from sqlalchemy.orm import Session
 from api.deps import get_caller, require_scope
 from api.schemas.models import (
     ArtifactOut,
+    ExplainResponse,
     ManifestOut,
     RunCreated,
     RunDetail,
     RunSummary,
     StageOut,
+    SummaryResponse,
     TriageResponse,
 )
 from core.auth import Scope
@@ -126,6 +128,9 @@ def get_run(run_id: str, session: Annotated[Session, Depends(get_session)]) -> R
         artifact_tree=tree,
         artifact_tree_truncated=tree_truncated,
         previous_run_id=run.previous_run_id,
+        llm_summary=run.llm_summary,
+        llm_summary_model=run.llm_summary_model,
+        llm_summary_at=run.llm_summary_at,
     )
 
 
@@ -307,6 +312,51 @@ def triage(run_id: str) -> TriageResponse:
     if result.get("error"):
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, result["error"])
     return TriageResponse(**result)
+
+
+# Explain and summarize read the findings corpus and drive a model over it —
+# ADMIN, for the same reason triage is.
+@router.post(
+    "/{run_id}/findings/{finding_id}/explain",
+    response_model=ExplainResponse,
+    dependencies=[Depends(require_scope(Scope.ADMIN))],
+)
+def explain(run_id: str, finding_id: str) -> ExplainResponse:
+    """Explain one finding in depth.
+
+    On demand and per-finding: this role runs on a reasoning model by default,
+    so doing it for every finding in a run would cost more than the scan and
+    produce prose nobody asked to read.
+    """
+    from core.orchestrator.tasks import explain_finding_task
+
+    try:
+        result = explain_finding_task.apply(args=[run_id, finding_id]).get()
+    except Exception as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from None
+
+    if result.get("error"):
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, result["error"])
+    return ExplainResponse(**result)
+
+
+@router.post(
+    "/{run_id}/summarize",
+    response_model=SummaryResponse,
+    dependencies=[Depends(require_scope(Scope.ADMIN))],
+)
+def summarize(run_id: str) -> SummaryResponse:
+    """Write the run's reviewer-facing summary. One model call."""
+    from core.orchestrator.tasks import summarize_run_task
+
+    try:
+        result = summarize_run_task.apply(args=[run_id]).get()
+    except Exception as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from None
+
+    if result.get("error"):
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, result["error"])
+    return SummaryResponse(**result)
 
 
 def _summarise(session: Session, run: Run) -> RunSummary:

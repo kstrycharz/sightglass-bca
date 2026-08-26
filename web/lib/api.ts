@@ -1,20 +1,33 @@
 /**
  * Typed API client.
  *
- * Server components call the API directly (inside the compose network); client
- * components go through Next's rewrite on the same origin. `apiUrl` picks the
- * right base for whichever side is calling, so no component needs to know.
+ * **The `api` object is server-only.** It attaches the dashboard's credential,
+ * which it reads from `./runtime-token` — a module that touches `node:fs`.
+ * Importing `api` (or anything else non-type from this file) into a `"use
+ * client"` component pulls `node:fs` into the browser bundle and fails the
+ * webpack build outright. `tsc --noEmit` does not catch it; only a real
+ * `next build` does.
+ *
+ * Client components talk to the backend with a bare
+ * `fetch("/api/...")` against the proxy route, which attaches the same token
+ * server-side. That is deliberate: a token in client JavaScript is a token any
+ * page script can read, and the findings page is a list of exposed secrets.
+ *
+ * Types are safe to import anywhere — `import type` is erased at compile time.
+ * Shared runtime values belong in a dependency-free module (see
+ * `./severity.ts`), not here.
  */
+
+import type { Severity } from "./severity";
+
+export { SEVERITY_ORDER } from "./severity";
+export type { Severity };
 
 const SERVER_API = process.env.SIGHTGLASS_API_URL ?? "http://localhost:8000";
 
 export function apiUrl(path: string): string {
   return typeof window === "undefined" ? `${SERVER_API}${path}` : path;
 }
-
-export type Severity = "critical" | "high" | "medium" | "low" | "info";
-
-export const SEVERITY_ORDER: Severity[] = ["critical", "high", "medium", "low", "info"];
 
 export interface RunSummary {
   id: string;
@@ -78,6 +91,10 @@ export interface RunDetail extends RunSummary {
   artifact_tree: ArtifactNode | null;
   artifact_tree_truncated: boolean;
   previous_run_id: string | null;
+  /** From the `summarize` role; null until someone asks for it. */
+  llm_summary: string | null;
+  llm_summary_model: string | null;
+  llm_summary_at: string | null;
 }
 
 export interface FindingLocation {
@@ -117,6 +134,27 @@ export interface Finding {
   locations: FindingLocation[];
   location_count: number;
   llm: LlmAssessment | null;
+  /** Non-null only when the run opted into plaintext retention. */
+  value_plaintext: string | null;
+  /** From the `explain` role; null until someone asks for it. */
+  llm_explanation: string | null;
+  llm_explained_by: string | null;
+  llm_explained_at: string | null;
+}
+
+export interface ExplainResponse {
+  run_id: string;
+  finding_id: string;
+  explanation: string;
+  model: string;
+  duration_s: number;
+}
+
+export interface SummaryResponse {
+  run_id: string;
+  summary: string;
+  model: string;
+  duration_s: number;
 }
 
 export interface ProviderHealth {
@@ -176,15 +214,17 @@ export interface TriageResponse {
  * server-rendered page returns "a valid API token is required" the moment
  * authentication is switched on.
  *
- * Never reachable from the browser: this module is imported by both server and
- * client components, but `process.env` without a `NEXT_PUBLIC_` prefix is
- * replaced with `undefined` in the client bundle, so the value only exists in
- * the Node process. Client components go through the proxy route, which
- * attaches the same token from its own environment.
+ * `getApiToken` lives in `./runtime-token`, not here, because it touches
+ * `node:fs` to read the token the setup wizard persisted — and this module is
+ * imported by both server and client components. A dynamic `import()` behind
+ * the `typeof window` guard keeps that file out of the browser bundle, where
+ * bundling a `node:fs` import would fail the build outright rather than just
+ * being dead code.
  */
-function serverAuthHeaders(): Record<string, string> {
+async function serverAuthHeaders(): Promise<Record<string, string>> {
   if (typeof window !== "undefined") return {};
-  const token = process.env.SIGHTGLASS_TOKEN;
+  const { getApiToken } = await import("./runtime-token");
+  const token = getApiToken();
   return token ? { authorization: `Bearer ${token}` } : {};
 }
 
@@ -192,7 +232,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(apiUrl(path), {
     cache: "no-store",
     ...init,
-    headers: { ...serverAuthHeaders(), ...(init?.headers ?? {}) },
+    headers: { ...(await serverAuthHeaders()), ...(init?.headers ?? {}) },
   });
   if (!response.ok) {
     let detail = response.statusText;
@@ -222,6 +262,12 @@ export const api = {
     }),
   triage: (runId: string) =>
     request<TriageResponse>(`/api/runs/${runId}/triage`, { method: "POST" }),
+  explain: (runId: string, findingId: string) =>
+    request<ExplainResponse>(`/api/runs/${runId}/findings/${findingId}/explain`, {
+      method: "POST",
+    }),
+  summarize: (runId: string) =>
+    request<SummaryResponse>(`/api/runs/${runId}/summarize`, { method: "POST" }),
   llmSettings: () => request<LlmSettings>("/api/settings/llm"),
   rulePack: () => request<RulePackInfo>("/api/settings/rules"),
 };

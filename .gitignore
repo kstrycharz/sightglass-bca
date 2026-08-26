@@ -27,6 +27,10 @@ web/.turbo/
 *.pfx
 *.key
 
+# The dashboard's persisted API token, when the web app is run outside its
+# container (in compose this lives in the `web-data` volume, not the repo).
+web/data/
+
 # Build & runtime output
 dist/
 build/
@@ -44,6 +48,23 @@ tests/corpus/out/
 # Only local scratch under .sightglass/ is ignored.
 .sightglass/cache/
 .sightglass/*.local.yaml
+
+# Scan output. These are per-run reports about a specific binary — they name
+# internal paths, hostnames, and masked credentials, so they are the last thing
+# that should land in a public repo by accident. Committing a baseline is a
+# deliberate act; name it explicitly rather than letting the glob catch it.
+*.sarif
+*.cdx.json
+sightglass-report-*.pdf
+sightglass-report-*.html
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Claude Code local settings (machine-specific; CLAUDE.md itself is committed)
+.claude/settings.local.json
 
 # Tool droppings
 .DS_Store

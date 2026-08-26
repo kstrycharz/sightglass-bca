@@ -18,13 +18,26 @@ import { useState, useTransition } from "react";
 import type { LlmSettings, ProviderHealth } from "@/lib/api";
 import { Button } from "@/components/ui";
 
+// Say where each role is actually invoked from, not just what it would do.
+// These descriptions previously read as capabilities the product had; three of
+// the five had no caller at all, so an operator could configure a model, be
+// told it was ready, and never see any output from it.
 const ROLE_NOTES: Record<string, string> = {
   triage:
-    "Runs over every candidate — thousands for a large installer. Pick for speed.",
-  discover: "One call per run over unmatched strings. Pick for speed.",
-  explain: "A handful of calls over confirmed findings. Pick for quality.",
-  remediate: "Writes the fix a developer follows. Pick for quality.",
-  summarize: "One call per report. Pick for quality.",
+    "Runs over every candidate — thousands for a large installer. Pick for speed. " +
+    'Triggered by "Run AI triage" on a run.',
+  discover:
+    "One call per run over unmatched strings, proposing new rules. Pick for speed. " +
+    "Triggered by the discover endpoint.",
+  explain:
+    "One call per finding, on request. Pick for quality — it is routed to a " +
+    'reasoning model by default. Triggered by "Explain this finding" on a finding.',
+  summarize:
+    'One call per run. Pick for quality. Triggered by "Write summary" at the top ' +
+    "of a run.",
+  remediate:
+    "Not yet wired to anything. Configuring it has no effect today; the " +
+    "remediation shown on a finding comes from the rule pack.",
 };
 
 export function LlmControls({ settings }: { settings: LlmSettings }) {

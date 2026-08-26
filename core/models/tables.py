@@ -82,6 +82,14 @@ class Run(Base, TimestampMixin):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error: Mapped[str | None] = mapped_column(Text)
 
+    # --- advisory: the `summarize` role's run-level briefing ----------------
+    llm_summary: Mapped[str | None] = mapped_column(Text)
+    """One reviewer-facing paragraph over the whole run. Advisory like every
+    other llm_* field: null unless someone asked for it, and the report is
+    complete without it."""
+    llm_summary_model: Mapped[str | None] = mapped_column(String(128))
+    llm_summary_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     previous_run_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("runs.id", ondelete="SET NULL")
     )
@@ -322,6 +330,15 @@ class Finding(Base, TimestampMixin):
     llm_reasoning: Mapped[str | None] = mapped_column(Text)
     llm_model: Mapped[str | None] = mapped_column(String(128))
     llm_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    llm_explanation: Mapped[str | None] = mapped_column(Text)
+    """Long-form 'why does this matter, what do I do about it' prose from the
+    `explain` role. Separate from `llm_reasoning`, which is triage's one-line
+    justification for a verdict: they answer different questions, come from
+    different models under the default routing, and conflating them would mean
+    running explain silently overwrote the audit trail of the triage decision."""
+    llm_explained_by: Mapped[str | None] = mapped_column(String(128))
+    llm_explained_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     first_seen_run_id: Mapped[str | None] = mapped_column(String(36))
     suppressed_by: Mapped[str | None] = mapped_column(String(64))

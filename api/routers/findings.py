@@ -12,7 +12,7 @@ from api.deps import require_scope
 from api.schemas.models import FindingOut, FindingPatch, LlmAssessment, LocationOut
 from core.auth import Scope
 from core.db import get_session, session_scope
-from core.models import AuditLog, Finding, FindingLocation
+from core.models import AuditLog, Evidence, Finding, FindingLocation
 from core.models.enums import AuditAction, FindingStatus
 from core.storage import get_object_store
 from core.vocab import Severity
@@ -173,6 +173,19 @@ def _to_out(session: Session, finding: Finding, previous_ids: set[str]) -> Findi
             assessed_at=finding.llm_at,
         )
 
+    # Every evidence row in this finding's group was matched under the same
+    # rule with the same value_hash (`correlator.py`), so any one of them that
+    # retained plaintext carries the same value the finding itself masks.
+    value_plaintext = session.scalars(
+        select(Evidence.value_plaintext)
+        .where(
+            Evidence.run_id == finding.run_id,
+            Evidence.value_hash == finding.value_hash,
+            Evidence.value_plaintext.is_not(None),
+        )
+        .limit(1)
+    ).first()
+
     return FindingOut(
         id=finding.id,
         run_id=finding.run_id,
@@ -193,4 +206,8 @@ def _to_out(session: Session, finding: Finding, previous_ids: set[str]) -> Findi
         locations=[LocationOut.model_validate(location) for location in locations],
         location_count=len(locations),
         llm=assessment,
+        value_plaintext=value_plaintext,
+        llm_explanation=finding.llm_explanation,
+        llm_explained_by=finding.llm_explained_by,
+        llm_explained_at=finding.llm_explained_at,
     )

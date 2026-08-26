@@ -137,7 +137,14 @@ You want `"ready": true`. The `advisory.sandbox` entry reporting unhealthy is
 **correct** — the API deliberately has no Docker socket, because spawning
 containers is the worker's job. It is reported but does not gate readiness.
 
-Open <http://localhost:3000>. You should see an empty runs list.
+Open <http://localhost:3000>. The API requires a bearer token by default
+(`SIGHTGLASS_AUTH_REQUIRED=true`), and a fresh deployment has none yet — the
+dashboard notices and opens a one-time setup wizard instead of the runs list.
+Click through it: it mints the first admin token and saves it for the
+dashboard's own use immediately, no `.env` edit or restart required. A
+headless operator gets the same mint via
+`curl -X POST http://localhost:8000/api/setup/bootstrap`. After that, or on
+any later visit, you land on the (empty) runs list.
 
 ---
 
@@ -444,6 +451,18 @@ docker compose ps
 
 If Postgres is unhealthy, the API will not be ready. `make clean` then
 `make dev` recreates the volumes.
+
+If everything is healthy but every page still says a token is required, the
+dashboard hasn't completed setup — open <http://localhost:3000/setup>
+directly. It only ever mints once: a 409 there means a token already exists in
+Postgres, but the dashboard's own copy of it (persisted in the `web-data`
+volume) is missing or stale — most often because only `postgres-data` was
+removed by hand rather than the whole stack. Recreate both together:
+
+```bash
+docker compose down --volumes
+docker compose up --build -d
+```
 
 ### A worker crash-loops
 

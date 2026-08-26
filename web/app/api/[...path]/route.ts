@@ -26,18 +26,12 @@ import { IncomingMessage, request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { Readable } from "node:stream";
 import type { NextRequest } from "next/server";
+import { getApiToken } from "@/lib/runtime-token";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 const API_URL = process.env.SIGHTGLASS_API_URL ?? "http://localhost:8000";
-
-// The dashboard's own credential, read at runtime and never sent to the
-// browser. It is attached here, server-side, precisely so the token does not
-// live in client JavaScript where any page script could read it — the
-// findings page is a list of a company's exposed secrets, and its credential
-// deserves the same care as the findings.
-const API_TOKEN = process.env.SIGHTGLASS_TOKEN ?? "";
 
 // Hop-by-hop headers, plus ones the upstream must compute for itself. `host`
 // would break virtual-host routing; `content-length` would contradict a
@@ -72,7 +66,8 @@ function proxy(request: NextRequest, path: string[]): Promise<Response> {
 
   // Set rather than defaulted: a browser must never be able to override the
   // dashboard's credential by sending its own Authorization header.
-  if (API_TOKEN) headers["authorization"] = `Bearer ${API_TOKEN}`;
+  const apiToken = getApiToken();
+  if (apiToken) headers["authorization"] = `Bearer ${apiToken}`;
 
   return new Promise<Response>((resolve) => {
     const upstream = send(

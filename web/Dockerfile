@@ -34,6 +34,14 @@ COPY --from=builder --chown=nextjs:nextjs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nextjs /app/.next/static ./.next/static
 COPY --from=builder --chown=nextjs:nextjs /app/public ./public
 
+# Where the setup wizard persists the minted API token (SIGHTGLASS_TOKEN_FILE
+# in web/lib/runtime-token.ts). Owned by the app user *before* the named
+# volume in docker-compose.yml mounts over it: unlike a tmpfs or bind mount, a
+# named volume's first mount copies in whatever ownership the image already
+# has at that path — so this has to be set here, not fixed up at runtime by a
+# non-root process that cannot chown its own mount point.
+RUN mkdir -p /app/data && chown nextjs:nextjs /app/data
+
 USER 10002:10002
 EXPOSE 3000
 CMD ["node", "server.js"]

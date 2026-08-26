@@ -52,7 +52,7 @@ providers:
   local-reasoning:
     kind: ollama
     base_url: http://192.168.1.49:11434
-    model: glm-4.7-flash:bf16
+    model: glm-4.7-flash:q4_K_M
     # Reasoning models emit a separate `thinking` stream before answering. Give
     # them room: a budget sized for the answer alone returns an empty response.
     num_ctx: 16384

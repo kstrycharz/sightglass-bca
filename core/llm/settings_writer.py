@@ -27,7 +27,7 @@ from typing import Any
 import structlog
 import yaml
 
-from core.llm.router import DEFAULT_CONFIG_PATH, LLMConfigError, load_config
+from core.llm.router import LLMConfigError, load_config
 
 log = structlog.get_logger(__name__)
 
@@ -46,12 +46,35 @@ class LlmUpdate:
     roles: dict[str, str] | None = None
     provider_models: dict[str, str] | None = None
     """Provider name to model id — how "change the model" actually lands."""
+    add_provider: NewProvider | None = None
+    """A provider being defined for the first time, from the setup wizard."""
+    egress: str | None = None
+    """Set to "allow" when a hosted provider is configured. A cloud endpoint
+    with the default deny policy fails at the guard, not at the request, which
+    is correct but baffling if the wizard just told you it worked."""
+
+
+@dataclass(frozen=True, slots=True)
+class NewProvider:
+    """A provider definition. Carries no API key by design — keys live in the
+    runtime store (`core.llm.secrets`), never in this committed file."""
+
+    name: str
+    kind: str
+    model: str
+    base_url: str = ""
+    num_ctx: int | None = None
 
 
 def _config_path() -> Path:
-    from core.config import get_settings
+    """The runtime copy, not the one baked into the image.
 
-    return Path(get_settings().repo_root) / DEFAULT_CONFIG_PATH
+    Writing to `repo_root` would put the operator's provider choice somewhere
+    the next `docker compose build` overwrites. See `router.active_config_path`.
+    """
+    from core.llm.router import ensure_runtime_config
+
+    return ensure_runtime_config()
 
 
 def _write_atomically(path: Path, text: str) -> None:
@@ -96,6 +119,28 @@ def apply_update(update: LlmUpdate, *, path: Path | None = None) -> Path:
 
     if update.enabled is not None:
         document["enabled"] = bool(update.enabled)
+
+    # Before roles, so a role in the same update can point at it.
+    if update.add_provider is not None:
+        new = update.add_provider
+        if not new.name.strip():
+            raise LLMConfigError("a provider needs a name")
+        if not new.model.strip():
+            raise LLMConfigError(f"provider {new.name!r}: model must not be empty")
+
+        providers = dict(document.get("providers") or {})
+        entry: dict[str, Any] = {"kind": new.kind, "model": new.model.strip()}
+        if new.base_url.strip():
+            entry["base_url"] = new.base_url.strip()
+        if new.num_ctx:
+            entry["num_ctx"] = int(new.num_ctx)
+        providers[new.name.strip()] = entry
+        document["providers"] = providers
+
+    if update.egress is not None:
+        policy = dict(document.get("policy") or {})
+        policy["egress"] = str(update.egress)
+        document["policy"] = policy
 
     if update.roles:
         roles = dict(document.get("roles") or {})

@@ -30,8 +30,10 @@ x-backend-env: &backend-env
   SIGHTGLASS_REPO_ROOT: /app
   SIGHTGLASS_LOG_LEVEL: ${SIGHTGLASS_LOG_LEVEL:-INFO}
   SIGHTGLASS_EGRESS_POLICY: ${SIGHTGLASS_EGRESS_POLICY:-deny}
-  # The API demands a token by default. On first start with no tokens it
-  # mints an admin one and prints it to the api container's log.
+  # The API demands a token by default. On first start with no tokens the
+  # dashboard's setup wizard (opened automatically at http://localhost:3000)
+  # mints the first admin one; POST /api/setup/bootstrap does the same for a
+  # headless operator.
   SIGHTGLASS_AUTH_REQUIRED: ${SIGHTGLASS_AUTH_REQUIRED:-true}
   # CPU quota per analyzer container. The static analyzer parallelises
   # across it; see Settings.analyzer_cpus for the measurements.
@@ -113,6 +115,12 @@ services:
       - "8000"
     ports:
       - "${SIGHTGLASS_API_PORT:-8000}:8000"
+    volumes:
+      # Runtime state that must outlive a rebuild: the live LLM config the
+      # setup wizard writes, and the provider key store. Everything under /app
+      # is baked into the image, so without this every `docker compose build`
+      # would silently discard whatever model the operator configured.
+      - backend-data:/app/data
     depends_on:
       postgres:
         condition: service_healthy
@@ -148,6 +156,9 @@ services:
       # the only component that spawns containers. Analyzers never see it.
       - /var/run/docker.sock:/var/run/docker.sock
       - ${SIGHTGLASS_RUN_ROOT_HOST:-/var/lib/sightglass/runs}:/var/lib/sightglass/runs
+      # Shared with the API: the worker is what actually calls the model, so it
+      # must read the same config and keys the wizard wrote.
+      - backend-data:/app/data
     depends_on:
       redis:
         condition: service_healthy
@@ -173,6 +184,9 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${SIGHTGLASS_RUN_ROOT_HOST:-/var/lib/sightglass/runs}:/var/lib/sightglass/runs
+      # Shared with the API: the worker is what actually calls the model, so it
+      # must read the same config and keys the wizard wrote.
+      - backend-data:/app/data
     depends_on:
       redis:
         condition: service_healthy
@@ -201,10 +215,15 @@ services:
     environment:
       NEXT_PUBLIC_API_URL: ${SIGHTGLASS_PUBLIC_API_URL:-http://localhost:8000}
       SIGHTGLASS_API_URL: http://api:8000
-      # The dashboard's own credential. Attached server-side by the proxy route
-      # and never sent to the browser. Mint an admin token and put it in .env:
-      #   docker compose exec api sightglass token create dashboard --scope admin
+      # The dashboard's own credential, attached server-side by the proxy
+      # route and never sent to the browser. Setting this is optional: with
+      # nothing here, opening the dashboard on a fresh stack lands on its
+      # setup wizard, which mints the first admin token and persists it to
+      # `web-data` below — no `.env` edit, no container restart. Set this
+      # only to pin the dashboard to a token you minted yourself.
       SIGHTGLASS_TOKEN: ${SIGHTGLASS_TOKEN:-}
+    volumes:
+      - web-data:/app/data
     ports:
       - "${SIGHTGLASS_WEB_PORT:-3000}:3000"
     depends_on:
@@ -215,3 +234,5 @@ services:
 volumes:
   postgres-data:
   minio-data:
+  web-data:
+  backend-data:

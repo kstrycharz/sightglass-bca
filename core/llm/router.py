@@ -10,6 +10,7 @@ Config lives in ``config/llm.yaml`` and is hot-reloadable.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -54,9 +55,43 @@ class LLMConfig:
         return name
 
 
+def active_config_path() -> Path:
+    """Where the live LLM config is read from and written to.
+
+    Not the copy baked into the image. `config/llm.yaml` ships as the *default*,
+    but the settings page and the setup wizard write to this file at runtime,
+    and an image-local path means every `docker compose build` silently throws
+    those edits away — which would make configuring a provider through the UI
+    pointless. The runtime copy lives in a volume and is seeded from the image
+    default on first use (see `ensure_runtime_config`).
+    """
+    override = os.environ.get("SIGHTGLASS_LLM_CONFIG")
+    if override:
+        return Path(override)
+    return Path(get_settings().data_dir) / "llm.yaml"
+
+
+def ensure_runtime_config() -> Path:
+    """Seed the runtime config from the image default, once.
+
+    Copied rather than symlinked so the shipped default stays readable as a
+    reference, and so an operator can delete the runtime copy to get it back.
+    """
+    active = active_config_path()
+    if active.is_file():
+        return active
+
+    packaged = Path(get_settings().repo_root) / DEFAULT_CONFIG_PATH
+    active.parent.mkdir(parents=True, exist_ok=True)
+    if packaged.is_file():
+        active.write_text(packaged.read_text(encoding="utf-8"), encoding="utf-8")
+        log.info("llm.config_seeded", source=str(packaged), target=str(active))
+    return active
+
+
 def load_config(path: Path | None = None) -> LLMConfig:
     settings = get_settings()
-    config_path = path or (Path(settings.repo_root) / DEFAULT_CONFIG_PATH)
+    config_path = path or ensure_runtime_config()
 
     if not config_path.is_file():
         # Absent config is not an error: the deterministic pipeline is the
@@ -139,11 +174,57 @@ def build_provider(config: LLMConfig, name: str) -> LLMProvider:
             num_ctx=spec.get("num_ctx"),
         )
 
-    # Every other adapter (OpenAI, Anthropic, Google, Azure, Bedrock) lands in
-    # M3. Failing by name is better than a generic KeyError three frames deep.
+    # The key is never read from `spec` — it resolves from the environment or
+    # the runtime key store, so it cannot end up in config/llm.yaml, which is
+    # a committed file. See core.llm.secrets.
+    from core.llm.secrets import resolve_api_key
+
+    api_key = resolve_api_key(name, spec)
+
+    if kind in ("openai", "openai_compatible", "azure", "vllm"):
+        # One adapter for every endpoint that speaks the OpenAI chat shape.
+        # The aliases exist because operators reach for the vendor's name.
+        from core.llm.providers.openai_compatible import OpenAICompatibleProvider
+
+        return OpenAICompatibleProvider(
+            model=spec["model"],
+            name=name,
+            base_url=spec.get("base_url", "https://api.openai.com/v1"),
+            api_key=api_key,
+            guard=guard,
+        )
+
+    if kind == "anthropic":
+        from core.llm.providers.anthropic import AnthropicProvider
+
+        return AnthropicProvider(
+            model=spec["model"],
+            name=name,
+            base_url=spec.get("base_url", "https://api.anthropic.com/v1"),
+            api_key=api_key,
+            guard=guard,
+        )
+
+    if kind in ("google", "gemini"):
+        from core.llm.providers.google import GoogleProvider
+
+        return GoogleProvider(
+            model=spec["model"],
+            name=name,
+            base_url=spec.get(
+                "base_url", "https://generativelanguage.googleapis.com/v1beta"
+            ),
+            api_key=api_key,
+            guard=guard,
+        )
+
+    # Bedrock still lands later: it authenticates with SigV4 rather than a
+    # bearer token, so it needs credential handling none of the above share.
+    # Failing by name beats a generic KeyError three frames deep.
     raise NotImplementedError(
-        f"provider kind {kind!r} is not implemented yet; only 'ollama' is available "
-        "in M1. OpenAI, Anthropic, Google, Azure, and Bedrock adapters arrive in M3."
+        f"provider kind {kind!r} is not implemented. Available: 'ollama', 'openai' "
+        "(and any OpenAI-compatible endpoint), 'anthropic', 'google'. "
+        "Bedrock arrives with SigV4 support."
     )
 
 

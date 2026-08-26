@@ -15,9 +15,9 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { Finding, Severity, TriageResponse } from "@/lib/api";
-import { SEVERITY_ORDER } from "@/lib/api";
-import { Button, Mono, Panel, SeverityTag, duration } from "@/components/ui";
+import type { ExplainResponse, Finding, Severity, TriageResponse } from "@/lib/api";
+import { SEVERITY_ORDER } from "@/lib/severity";
+import { Button, Mono, Panel, SeverityTag, duration, relativeTime } from "@/components/ui";
 
 const STATUS_LABEL: Record<string, string> = {
   open: "Open",
@@ -387,6 +387,8 @@ function FindingDetail({
           <Field label="ID" value={<Mono>{finding.id.slice(0, 16)}</Mono>} />
         </dl>
 
+        <SecretValue finding={finding} />
+
         <div>
           <Label>All {finding.locations.length} location(s)</Label>
           <ul className="mt-1 space-y-0.5">
@@ -419,15 +421,19 @@ function FindingDetail({
 
         {!deterministicOnly && finding.llm && (
           <div className="rounded border border-accent/30 bg-accent-muted/40 p-3">
-            <Label>AI assessment — advisory</Label>
+            <Label>AI triage — advisory</Label>
             <p className="mt-1 text-sm">{finding.llm.reasoning}</p>
             <p className="mt-2 text-xs text-content-muted">
               Verdict <strong>{finding.llm.verdict.replace(/_/g, " ")}</strong> from{" "}
-              <Mono>{finding.llm.model}</Mono>. The finding, its severity, and its
-              offsets come from the rule and are unchanged by this.
+              <Mono>{finding.llm.model}</Mono>
+              {finding.llm.assessed_at && ` · ${relativeTime(finding.llm.assessed_at)}`}. The
+              finding, its severity, and its offsets come from the rule and are
+              unchanged by this.
             </p>
           </div>
         )}
+
+        {!deterministicOnly && <Explanation finding={finding} />}
       </div>
 
       <div className="space-y-4">
@@ -459,6 +465,140 @@ function FindingDetail({
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * The `explain` role, on demand.
+ *
+ * On demand rather than automatic because this role is routed to a reasoning
+ * model by default, which costs tens of seconds per call — running it over
+ * every finding in a run would take longer than the scan that produced them.
+ *
+ * The panel names the role, the model, and when it ran, because the previous
+ * arrangement (a single unlabelled "AI assessment" box) left no way to tell
+ * which model said what, or whether what you were reading was a triage
+ * verdict or an explanation.
+ */
+function Explanation({ finding }: { finding: Finding }) {
+  const [text, setText] = useState(finding.llm_explanation);
+  const [model, setModel] = useState(finding.llm_explained_by);
+  const [at, setAt] = useState(finding.llm_explained_at);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function run() {
+    setBusy(true);
+    setError(null);
+    try {
+      // Bare fetch through the proxy route, not `lib/api`: that module is
+      // server-only (it reads the dashboard's token from disk) and importing
+      // it here pulls `node:fs` into the browser bundle, which fails the
+      // build. Client components authenticate by going through the proxy,
+      // which attaches the token server-side.
+      const response = await fetch(
+        `/api/runs/${finding.run_id}/findings/${finding.id}/explain`,
+        { method: "POST" },
+      );
+      const body = await response.json();
+      if (!response.ok) {
+        throw new Error(body.detail ?? `explain failed (HTTP ${response.status})`);
+      }
+      const result = body as ExplainResponse;
+      setText(result.explanation);
+      setModel(result.model);
+      setAt(new Date().toISOString());
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!text) {
+    return (
+      <div>
+        <Button
+          onClick={(e) => {
+            e.stopPropagation();
+            void run();
+          }}
+          disabled={busy}
+        >
+          {busy ? "Explaining…" : "Explain this finding with AI"}
+        </Button>
+        {error && (
+          <p className="mt-1.5 text-xs text-critical">{error}</p>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded border border-accent/30 bg-accent-muted/40 p-3">
+      <Label>AI explanation — advisory</Label>
+      <p className="mt-1 whitespace-pre-wrap text-sm">{text}</p>
+      <p className="mt-2 text-xs text-content-muted">
+        Written by <Mono>{model ?? "an AI model"}</Mono>
+        {at && ` · ${relativeTime(at)}`}. Advisory prose only — it cannot change
+        this finding, its severity, or where it was found.
+      </p>
+      {error && <p className="mt-1.5 text-xs text-critical">{error}</p>}
+    </div>
+  );
+}
+
+/**
+ * The finding's value, masked by default.
+ *
+ * Reveal is click-to-show and resets on collapse, because the common way to
+ * leak a secret from a tool like this is to have it already on screen when
+ * someone shares it. Deliberately not gated behind the deterministic-view
+ * toggle: the plaintext comes from the rule match, not from a model.
+ *
+ * `value_plaintext` is null unless the run opted into retention, which is why
+ * the masked branch says how to get it rather than just showing dots.
+ */
+function SecretValue({ finding }: { finding: Finding }) {
+  const [revealed, setRevealed] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const plaintext = finding.value_plaintext;
+
+  async function copy() {
+    if (!plaintext) return;
+    await navigator.clipboard.writeText(plaintext);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
+
+  return (
+    <div>
+      <Label>Value{plaintext && revealed ? " — plaintext" : " — masked"}</Label>
+      <div className="mt-1 flex flex-wrap items-center gap-2">
+        <code
+          className={`scroll-x max-w-full flex-1 rounded border px-2 py-1 font-mono text-xs ${
+            revealed && plaintext
+              ? "border-critical/40 bg-critical-bg text-critical"
+              : "border-border bg-surface text-content-muted"
+          }`}
+        >
+          {revealed && plaintext ? plaintext : finding.value_masked}
+        </code>
+        {plaintext && (
+          <>
+            <Button onClick={() => setRevealed((on) => !on)}>
+              {revealed ? "Hide" : "Reveal"}
+            </Button>
+            {revealed && <Button onClick={copy}>{copied ? "Copied" : "Copy"}</Button>}
+          </>
+        )}
+      </div>
+      <p className="mt-1 text-xs text-content-subtle">
+        {plaintext
+          ? "This run retained plaintext, so the real value is stored in the database and shown here on request."
+          : "Only a masked value and a hash were stored. To see the real value, re-scan this artifact with “Retain full plaintext values” selected."}
+      </p>
     </div>
   );
 }

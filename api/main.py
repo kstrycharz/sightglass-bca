@@ -8,8 +8,7 @@ from contextlib import asynccontextmanager
 import structlog
 from fastapi import FastAPI
 
-from api.routers import findings, gate, health, runs, settings
-from core.auth import redact
+from api.routers import findings, gate, health, runs, settings, setup
 from core.config import SIGHTGLASS_VERSION, get_settings
 from core.logging import configure_logging
 
@@ -55,13 +54,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def _announce_auth(auth_required: bool) -> None:
-    """Say plainly whether the API is protected, and bootstrap it if it is.
+    """Say plainly whether the API is protected, and whether it is waiting to
+    be set up.
 
-    Secure-by-default only works if a fresh deployment can still be used, so
-    the first start with no tokens mints an admin one and prints it — once,
-    unrecoverably. The alternative is a shipped default credential, which is
-    worse, or defaulting the control off, which is how an unauthenticated API
-    ends up on a network.
+    Minting the first admin token is not done here. It used to be — a console
+    banner, printed once, unrecoverable if missed — and the failure mode was
+    exactly that: two processes racing to start first meant only one of them
+    ever showed it, and it was easy to lose in scrollback before anyone read
+    it. `POST /api/setup/bootstrap` (``api/routers/setup.py``) does the same
+    one-shot mint on request instead, from the dashboard's setup wizard or a
+    single deliberate `curl`, where the operator is already looking.
     """
     if not auth_required:
         # Loud on purpose. This is the configuration where anyone who can reach
@@ -76,36 +78,22 @@ def _announce_auth(auth_required: bool) -> None:
         return
 
     from core.db import session_scope
-    from core.pipeline.tokens import ensure_bootstrap_token
+    from core.pipeline.tokens import tokens_exist
 
     try:
         with session_scope() as session:
-            minted = ensure_bootstrap_token(session)
+            exists = tokens_exist(session)
     except Exception as exc:
-        # Never let bootstrap failure take the API down: an operator can mint a
-        # token with the CLI, and a crash-looping API is harder to recover from
-        # than a missing one.
-        log.warning("api.auth_bootstrap_failed", error=str(exc))
+        log.warning("api.auth_status_check_failed", error=str(exc))
         return
 
-    if minted is None:
+    if exists:
         log.info("api.auth_enabled")
-        return
-
-    banner = (
-        "\n"
-        + "=" * 78
-        + "\n  SIGHTGLASS: no API tokens existed, so a bootstrap admin token was created.\n"
-        + "  It is shown once and is not recoverable. Store it now.\n\n"
-        + f"      {minted.token}\n\n"
-        + "  Use it as:  sightglass scan ... --token <token>\n"
-        + "  Then mint scoped tokens and revoke this one:\n"
-        + "      sightglass token create ci-pipeline --scope ci\n"
-        + "      sightglass token revoke bootstrap\n"
-        + "=" * 78
-    )
-    print(banner, flush=True)
-    log.warning("api.auth_bootstrap_token_created", prefix=redact(minted.token))
+    else:
+        log.info(
+            "api.auth_enabled_awaiting_setup",
+            detail="no API tokens exist yet; open the dashboard or POST /api/setup/bootstrap",
+        )
 
 
 def create_app() -> FastAPI:
@@ -119,6 +107,7 @@ def create_app() -> FastAPI:
     # reference deployment, and a findings page — a list of a company's exposed
     # secrets — is the last thing that should be reachable cross-origin.
     app.include_router(health.router)
+    app.include_router(setup.router)
     app.include_router(runs.router)
     app.include_router(findings.router)
     app.include_router(gate.router)

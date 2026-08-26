@@ -14,6 +14,7 @@ import {
 import { BarList, PostureGauge, SeverityDonut, SeverityLegend } from "@/components/charts";
 import { ArtifactTree } from "@/components/artifact-tree";
 import { FindingsExplorer } from "@/components/findings-explorer";
+import { RunSummary } from "@/components/run-summary";
 import { RunProgress } from "@/components/run-progress";
 
 export const dynamic = "force-dynamic";
@@ -90,6 +91,13 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
         <RunProgress runId={run.id} initialStatus={run.status} />
       ) : (
         <>
+          <RunSummary
+            runId={run.id}
+            initialSummary={run.llm_summary}
+            initialModel={run.llm_summary_model}
+            initialAt={run.llm_summary_at}
+          />
+
           <div className="grid gap-4 lg:grid-cols-12">
             <Panel title="Posture" className="lg:col-span-4">
               <div className="flex flex-col items-center px-4 py-5">

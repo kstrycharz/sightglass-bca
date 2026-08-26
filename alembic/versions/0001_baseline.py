@@ -42,6 +42,35 @@ def upgrade() -> None:
     op.create_index(op.f("ix_api_tokens_created_at"), "api_tokens", ["created_at"], unique=False)
     op.create_index(op.f("ix_api_tokens_token_hash"), "api_tokens", ["token_hash"], unique=True)
     op.create_table(
+        "runs",
+        sa.Column("id", sa.String(length=36), nullable=False),
+        sa.Column("status", sa.String(length=16), nullable=False),
+        sa.Column("profile", sa.String(length=32), nullable=False),
+        sa.Column("root_artifact_id", sa.String(length=36), nullable=True),
+        sa.Column("attested_by", sa.String(length=255), nullable=False),
+        sa.Column("attestation_reference", sa.Text(), nullable=False),
+        sa.Column("attested_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("llm_enabled", sa.Boolean(), nullable=False),
+        sa.Column("retain_plaintext", sa.Boolean(), nullable=False),
+        sa.Column("dynamic_enabled", sa.Boolean(), nullable=False),
+        sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("finished_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("error", sa.Text(), nullable=True),
+        sa.Column("previous_run_id", sa.String(length=36), nullable=True),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
+        sa.ForeignKeyConstraint(
+            ["previous_run_id"],
+            ["runs.id"],
+            name=op.f("fk_runs_previous_run_id_runs"),
+            ondelete="SET NULL",
+        ),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_runs")),
+    )
+    op.create_index(op.f("ix_runs_created_at"), "runs", ["created_at"], unique=False)
+    op.create_index(op.f("ix_runs_status"), "runs", ["status"], unique=False)
+    op.create_table(
         "artifacts",
         sa.Column("id", sa.String(length=36), nullable=False),
         sa.Column("run_id", sa.String(length=36), nullable=False),
@@ -75,6 +104,22 @@ def upgrade() -> None:
     op.create_index(op.f("ix_artifacts_run_id"), "artifacts", ["run_id"], unique=False)
     op.create_index("ix_artifacts_run_parent", "artifacts", ["run_id", "parent_id"], unique=False)
     op.create_index("ix_artifacts_sha256", "artifacts", ["sha256"], unique=False)
+    # `runs.root_artifact_id` points at `artifacts`, and `artifacts.run_id`
+    # points back at `runs` — a genuine cycle, not just the wrong order. `runs`
+    # is created first with the column but not the constraint; this closes it
+    # once `artifacts` exists. Batch mode: Postgres runs this as a plain ALTER,
+    # but SQLite has no ALTER-ADD-CONSTRAINT at all, only the recreate-and-copy
+    # that batch mode performs — without it this passes review and Postgres,
+    # and fails only in the unit suite, which is the one place it is cheap to
+    # catch.
+    with op.batch_alter_table("runs") as batch_op:
+        batch_op.create_foreign_key(
+            op.f("fk_runs_root_artifact_id_artifacts"),
+            "artifacts",
+            ["root_artifact_id"],
+            ["id"],
+            ondelete="SET NULL",
+        )
     op.create_table(
         "audit_log",
         sa.Column("id", sa.String(length=36), nullable=False),
@@ -117,41 +162,6 @@ def upgrade() -> None:
     op.create_index(op.f("ix_llm_calls_created_at"), "llm_calls", ["created_at"], unique=False)
     op.create_index(op.f("ix_llm_calls_finding_id"), "llm_calls", ["finding_id"], unique=False)
     op.create_index(op.f("ix_llm_calls_run_id"), "llm_calls", ["run_id"], unique=False)
-    op.create_table(
-        "runs",
-        sa.Column("id", sa.String(length=36), nullable=False),
-        sa.Column("status", sa.String(length=16), nullable=False),
-        sa.Column("profile", sa.String(length=32), nullable=False),
-        sa.Column("root_artifact_id", sa.String(length=36), nullable=True),
-        sa.Column("attested_by", sa.String(length=255), nullable=False),
-        sa.Column("attestation_reference", sa.Text(), nullable=False),
-        sa.Column("attested_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("llm_enabled", sa.Boolean(), nullable=False),
-        sa.Column("retain_plaintext", sa.Boolean(), nullable=False),
-        sa.Column("dynamic_enabled", sa.Boolean(), nullable=False),
-        sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("finished_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("error", sa.Text(), nullable=True),
-        sa.Column("previous_run_id", sa.String(length=36), nullable=True),
-        sa.Column(
-            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
-        ),
-        sa.ForeignKeyConstraint(
-            ["previous_run_id"],
-            ["runs.id"],
-            name=op.f("fk_runs_previous_run_id_runs"),
-            ondelete="SET NULL",
-        ),
-        sa.ForeignKeyConstraint(
-            ["root_artifact_id"],
-            ["artifacts.id"],
-            name=op.f("fk_runs_root_artifact_id_artifacts"),
-            ondelete="SET NULL",
-        ),
-        sa.PrimaryKeyConstraint("id", name=op.f("pk_runs")),
-    )
-    op.create_index(op.f("ix_runs_created_at"), "runs", ["created_at"], unique=False)
-    op.create_index(op.f("ix_runs_status"), "runs", ["status"], unique=False)
     op.create_table(
         "suppressions",
         sa.Column("id", sa.String(length=36), nullable=False),
@@ -373,6 +383,17 @@ def downgrade() -> None:
     op.drop_index(op.f("ix_suppressions_value_hash"), table_name="suppressions")
     op.drop_index(op.f("ix_suppressions_created_at"), table_name="suppressions")
     op.drop_table("suppressions")
+    # The FK added by ALTER TABLE in upgrade() must go before either table it
+    # joins does, or dropping `artifacts` while `runs` still references it
+    # (or `runs` while `artifacts` still does) fails exactly as the cycle it
+    # was closing.
+    with op.batch_alter_table("runs") as batch_op:
+        batch_op.drop_constraint("fk_runs_root_artifact_id_artifacts", type_="foreignkey")
+    op.drop_index("ix_artifacts_sha256", table_name="artifacts")
+    op.drop_index("ix_artifacts_run_parent", table_name="artifacts")
+    op.drop_index(op.f("ix_artifacts_run_id"), table_name="artifacts")
+    op.drop_index(op.f("ix_artifacts_created_at"), table_name="artifacts")
+    op.drop_table("artifacts")
     op.drop_index(op.f("ix_runs_status"), table_name="runs")
     op.drop_index(op.f("ix_runs_created_at"), table_name="runs")
     op.drop_table("runs")
@@ -385,11 +406,6 @@ def downgrade() -> None:
     op.drop_index(op.f("ix_audit_log_created_at"), table_name="audit_log")
     op.drop_index(op.f("ix_audit_log_action"), table_name="audit_log")
     op.drop_table("audit_log")
-    op.drop_index("ix_artifacts_sha256", table_name="artifacts")
-    op.drop_index("ix_artifacts_run_parent", table_name="artifacts")
-    op.drop_index(op.f("ix_artifacts_run_id"), table_name="artifacts")
-    op.drop_index(op.f("ix_artifacts_created_at"), table_name="artifacts")
-    op.drop_table("artifacts")
     op.drop_index(op.f("ix_api_tokens_token_hash"), table_name="api_tokens")
     op.drop_index(op.f("ix_api_tokens_created_at"), table_name="api_tokens")
     op.drop_table("api_tokens")

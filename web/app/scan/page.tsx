@@ -28,6 +28,7 @@ export default function ScanPage() {
   const [dragging, setDragging] = useState(false);
   const [reference, setReference] = useState("");
   const [llmEnabled, setLlmEnabled] = useState(true);
+  const [retainPlaintext, setRetainPlaintext] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -48,6 +49,7 @@ export default function ScanPage() {
     const body = new FormData();
     body.append("file", file);
     body.append("llm_enabled", String(llmEnabled));
+    body.append("retain_plaintext", String(retainPlaintext));
     if (reference.trim()) body.append("attestation_reference", reference.trim());
 
     try {
@@ -143,6 +145,47 @@ export default function ScanPage() {
               </span>
             </span>
           </label>
+
+          <fieldset>
+            <legend className="text-sm font-medium">Secret value retention</legend>
+            <div className="mt-1.5 space-y-2">
+              <label className="flex items-start gap-2.5 text-sm">
+                <input
+                  type="radio"
+                  name="retain_plaintext"
+                  checked={!retainPlaintext}
+                  onChange={() => setRetainPlaintext(false)}
+                  className="mt-0.5"
+                />
+                <span>
+                  Masked and hashed only
+                  <span className="mt-0.5 block text-xs text-content-muted">
+                    Default. What the report and dashboard show — nothing else
+                    is stored for a finding's value.
+                  </span>
+                </span>
+              </label>
+              <label className="flex items-start gap-2.5 text-sm">
+                <input
+                  type="radio"
+                  name="retain_plaintext"
+                  checked={retainPlaintext}
+                  onChange={() => setRetainPlaintext(true)}
+                  className="mt-0.5"
+                />
+                <span>
+                  Retain full plaintext values for this run
+                  <span className="mt-0.5 block text-xs text-content-muted">
+                    Writes the actual secret value into the database,
+                    unencrypted, with no expiry and no page in this dashboard
+                    that reads it back — retrieving it means a direct SQL
+                    query against the evidence table. Turn this on only if you
+                    already have a process for that.
+                  </span>
+                </span>
+              </label>
+            </div>
+          </fieldset>
 
           <div>
             <label

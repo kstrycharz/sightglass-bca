@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from core.db import session_scope
 from core.orchestrator.celery_app import QUEUE_LLM, QUEUE_STATIC, celery_app
@@ -168,3 +168,138 @@ def discover_rules_task(run_id: str) -> dict[str, Any]:
             session.add(result.call)
 
     return {"run_id": run_id, **summarise(result)}
+
+
+def _llm_provider(role: str, run_id: str) -> tuple[Any, dict[str, Any] | None]:
+    """Resolve a provider for one role, or the error to return to the caller.
+
+    Every advisory task begins this way: disabled config, an unroutable role,
+    and an unreachable model are all *reportable* states, not exceptions. The
+    deterministic report stands unchanged in all three (§2.5).
+    """
+    from core.llm import LLMConfigError, load_config, provider_for_role
+
+    try:
+        config = load_config()
+        if not config.enabled:
+            return None, {"run_id": run_id, "error": "the LLM layer is disabled in config/llm.yaml"}
+        if role not in config.roles:
+            return None, {
+                "run_id": run_id,
+                "error": (
+                    f"no provider is routed to the {role!r} role; add it under "
+                    f"`roles:` in config/llm.yaml"
+                ),
+            }
+        provider = provider_for_role(role, config)
+    except (LLMConfigError, NotImplementedError) as exc:
+        return None, {"run_id": run_id, "error": str(exc)}
+
+    health = provider.health()
+    if not health.healthy:
+        return None, {"run_id": run_id, "error": f"{role} provider unavailable: {health.detail}"}
+
+    # Same reason as triage: a cold model's load time would otherwise land on
+    # the first call and look like the model being slow.
+    warm = getattr(provider, "warm", None)
+    if callable(warm):
+        warm()
+    return provider, None
+
+
+@celery_app.task(name="sightglass.explain_finding", queue=QUEUE_LLM, max_retries=0)
+def explain_finding_task(run_id: str, finding_id: str) -> dict[str, Any]:
+    """Explain one finding in depth, on request.
+
+    Per-finding rather than per-run on purpose. This role is routed to a
+    reasoning model by default, which costs tens of seconds per call — running
+    it over every finding in a 45-finding run would take longer than the scan
+    that produced them, for prose nobody asked to read. The reviewer picks the
+    findings that matter.
+    """
+    from core.llm import apply_explanation, explain_finding
+    from core.models import Finding, FindingLocation
+
+    provider, error = _llm_provider("explain", run_id)
+    if error is not None:
+        return error
+
+    with session_scope() as session:
+        finding = session.get(Finding, (finding_id, run_id))
+        if finding is None:
+            return {"run_id": run_id, "error": f"finding {finding_id} not found in run {run_id}"}
+
+        locations = list(
+            session.scalars(
+                select(FindingLocation).where(
+                    FindingLocation.finding_id == finding_id,
+                    FindingLocation.run_id == run_id,
+                )
+            )
+        )
+        path = locations[0].path_in_tree if locations else ""
+
+        text, call = explain_finding(
+            provider,
+            finding,
+            path_in_tree=path,
+            location_count=len(locations) or 1,
+            run_id=run_id,
+        )
+        session.add(call)
+
+        if text is None:
+            return {"run_id": run_id, "error": call.error or "the model returned no explanation"}
+
+        apply_explanation(finding, text, provider.model)
+        return {
+            "run_id": run_id,
+            "finding_id": finding_id,
+            "explanation": text,
+            "model": provider.model,
+            "duration_s": round(call.duration_s or 0.0, 2),
+        }
+
+
+@celery_app.task(name="sightglass.summarize_run", queue=QUEUE_LLM, max_retries=0)
+def summarize_run_task(run_id: str) -> dict[str, Any]:
+    """One reviewer-facing paragraph over the whole run."""
+    from core.llm import summarize_run
+    from core.models import Artifact, Finding, Run
+
+    provider, error = _llm_provider("summarize", run_id)
+    if error is not None:
+        return error
+
+    with session_scope() as session:
+        run = session.get(Run, run_id)
+        if run is None:
+            return {"run_id": run_id, "error": f"run {run_id} not found"}
+
+        findings = list(session.scalars(select(Finding).where(Finding.run_id == run_id)))
+        root = session.scalars(
+            select(Artifact).where(Artifact.run_id == run_id, Artifact.parent_id.is_(None))
+        ).first()
+        artifact_count = session.scalar(
+            select(func.count()).select_from(Artifact).where(Artifact.run_id == run_id)
+        )
+
+        result = summarize_run(
+            provider,
+            run,
+            findings,
+            artifact_name=root.name if root else "(unknown)",
+            artifact_count=artifact_count or 0,
+        )
+        if result.call is not None:
+            session.add(result.call)
+
+        if result.error is not None:
+            return {"run_id": run_id, "error": result.error}
+
+        return {
+            "run_id": run_id,
+            "summary": result.text,
+            "model": provider.model,
+            "duration_s": round(result.call.duration_s or 0.0, 2) if result.call else 0.0,
+        }

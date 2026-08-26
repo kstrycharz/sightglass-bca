@@ -87,27 +87,36 @@ and what is next.
 
 ## Quick start
 
-Requires Docker, [uv](https://docs.astral.sh/uv/), and Node 22.
+Requires Docker. That's it — no `.env` to hand-fill, no token to mint first.
 
 ```bash
-cp .env.example .env
+docker compose up --build -d
 ```
 
-`SIGHTGLASS_RUN_ROOT` **must be an absolute host path** — the worker spawns
-analyzer containers as siblings through the Docker socket, and the daemon
-resolves their bind mounts on the host. See the comment at the top of
-[docker-compose.yml](docker-compose.yml).
+Open <http://localhost:3000>. A fresh deployment has no API token yet, so the
+dashboard opens on a one-time setup wizard: click through it, and it mints the
+first admin token and saves it for the dashboard itself — no restart, no `.env`
+edit. A headless operator gets the same token from:
 
 ```bash
-make install      # Python dependencies
-make images       # analyzer images
-make dev          # the full stack: Postgres, Redis, MinIO, API, workers, web
+curl -X POST http://localhost:8000/api/setup/bootstrap
 ```
 
-Then open <http://localhost:3000> for the dashboard and
-<http://localhost:8000/docs> for the API.
+<http://localhost:8000/docs> has the API.
 
-Verification:
+One setting is worth knowing about before you scan anything real:
+**`SIGHTGLASS_RUN_ROOT_HOST`** must be an absolute *host* path, because the
+worker spawns each analyzer as a sibling container through the Docker socket
+and the daemon resolves bind mounts on the host, not inside the worker. The
+default (`/var/lib/sightglass/runs`) is fine on Linux and macOS; on Windows,
+copy `.env.example` to `.env` and set it to a Windows path (e.g.
+`C:\sightglass\runs`). Get it wrong and analyzers get empty input directories
+with no error at all — see the comment at the top of
+[docker-compose.yml](docker-compose.yml) and
+[docs/SETUP.md](docs/SETUP.md#2-get-the-code-and-configure).
+
+For local development (source reload, running tests without Docker, an
+Ollama-backed model), see [docs/SETUP.md](docs/SETUP.md), which also covers:
 
 ```bash
 make check              # lint, type-check, unit tests — no Docker needed

@@ -195,18 +195,28 @@ def _aware(now: datetime, record: ApiToken) -> datetime:
     return now
 
 
+def tokens_exist(session: Session) -> bool:
+    """Whether any API token — active, expired, or revoked — has ever existed.
+
+    Deliberately not scoped to active tokens: a deployment that revoked its
+    only token is not "unconfigured", and re-running setup would mint a second
+    admin credential nobody asked for.
+    """
+    return session.scalars(select(ApiToken.id).limit(1)).first() is not None
+
+
 def ensure_bootstrap_token(session: Session) -> MintedToken | None:
     """Mint a first admin token when authentication is on and none exists.
 
     Without this, enabling authentication by default would brick a fresh
     deployment: the API would require a credential that can only be created
-    through the API. Printing one to the startup log is the same trade Jenkins
-    and Grafana make, and it is a better one than shipping a default password
-    or defaulting the control to off.
+    through the API. Callers decide how to disclose it — the dashboard's setup
+    wizard shows it once in the browser; a headless operator gets it back from
+    the HTTP response of whatever called this.
 
     Returns ``None`` when tokens already exist, which is the steady state.
     """
-    if session.scalars(select(ApiToken.id).limit(1)).first() is not None:
+    if tokens_exist(session):
         return None
 
     minted = create_token(
@@ -215,14 +225,14 @@ def ensure_bootstrap_token(session: Session) -> MintedToken | None:
         scope=Scope.ADMIN,
         created_by="bootstrap",
     )
-    # The prefix, never the token. The plaintext is disclosed exactly once, on
-    # the console banner the operator is watching — putting it here too would
-    # ship a live admin credential to whatever aggregates these logs, where it
-    # is indexed, retained, and outside the operator's control. That is the
-    # same mistake the product exists to find in other people's binaries.
+    # The prefix, never the token. The plaintext is disclosed exactly once, to
+    # whatever the caller returns it to — putting it here too would ship a live
+    # admin credential to whatever aggregates these logs, where it is indexed
+    # and retained outside the operator's control. That is the same mistake
+    # this product exists to find in other people's binaries.
     log.warning(
         "auth.bootstrap_token_created",
         prefix=minted.token[: len(TOKEN_PREFIX) + 8],
-        hint="printed once to the console; not recoverable from these logs",
+        hint="disclosed once to the caller; not recoverable from these logs",
     )
     return minted

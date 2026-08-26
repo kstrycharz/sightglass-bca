@@ -18,6 +18,9 @@ The Postgres-specific risk — a type that renders differently — is what
 
 from __future__ import annotations
 
+import contextlib
+import io
+import re
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -127,6 +130,24 @@ class TestEmptyDatabase:
             assert not missing, f"{name} is missing {sorted(missing)}"
 
 
+def _legacy_database(engine: Engine) -> None:
+    """Reproduce a deployment that predates Alembic: the baseline schema, with
+    no version table.
+
+    Built by running the baseline migration and then dropping
+    ``alembic_version`` — deliberately *not* by ``create_all()`` from the
+    current models. ``create_all`` builds today's schema, which already has
+    every column that later migrations add, so adopting it replays those
+    migrations onto columns that already exist and fails for a reason no real
+    deployment can hit. That is a property of the simulation, not of the
+    migration, and pinning it to the baseline is what stops every future
+    revision from breaking these two tests.
+    """
+    _run(engine, command.upgrade, BASELINE_REVISION)
+    with engine.begin() as connection:
+        connection.execute(text("DROP TABLE alembic_version"))
+
+
 class TestAdoptingAPreMigrationDatabase:
     """The state every existing deployment is in: real data, no version table."""
 
@@ -134,32 +155,41 @@ class TestAdoptingAPreMigrationDatabase:
         """Replaying the baseline onto populated tables would fail on the first
         CREATE TABLE, taking the service down on the upgrade that introduced
         migrations — the worst possible moment to find out."""
-        Base.metadata.create_all(engine)
-        with engine.begin() as connection:
-            connection.execute(text("DROP TABLE run_manifests"))
-            connection.execute(
-                text("CREATE TABLE run_manifests (id VARCHAR PRIMARY KEY, run_id VARCHAR)")
-            )
+        _legacy_database(engine)
 
         upgrade_schema()
 
         assert "components" in _columns(engine, "run_manifests")
 
+    def test_adoption_applies_every_later_revision(self, engine: Engine) -> None:
+        """Not just the one that happened to exist when this was written: an
+        adopted database must end up with the same columns as a fresh one."""
+        _legacy_database(engine)
+
+        upgrade_schema()
+
+        for name, table in Base.metadata.tables.items():
+            declared = {column.name for column in table.columns}
+            missing = declared - _columns(engine, name)
+            assert not missing, f"{name} is missing {sorted(missing)} after adoption"
+
     def test_existing_rows_survive_the_adoption(self, engine: Engine) -> None:
-        Base.metadata.create_all(engine)
+        _legacy_database(engine)
         with engine.begin() as connection:
-            connection.execute(text("DROP TABLE run_manifests"))
             connection.execute(
-                text("CREATE TABLE run_manifests (id VARCHAR PRIMARY KEY, run_id VARCHAR)")
-            )
-            connection.execute(
-                text("INSERT INTO run_manifests (id, run_id) VALUES ('m1', 'r1')")
+                text(
+                    "INSERT INTO runs (id, status, profile, attested_by, "
+                    "attestation_reference, attested_at, llm_enabled, "
+                    "retain_plaintext, dynamic_enabled) VALUES "
+                    "('r1', 'completed', 'standard', 'kyle', 'SEC-1', "
+                    "'2026-01-01 00:00:00', 0, 0, 0)"
+                )
             )
 
         upgrade_schema()
 
         with engine.connect() as connection:
-            assert connection.execute(text("SELECT run_id FROM run_manifests")).scalar() == "r1"
+            assert connection.execute(text("SELECT attested_by FROM runs")).scalar() == "kyle"
 
     def test_an_empty_database_is_not_mistaken_for_a_legacy_one(self, engine: Engine) -> None:
         """Adoption keys off `runs` existing. Stamping a genuinely empty
@@ -182,3 +212,121 @@ class TestIdempotence:
         assert "components" not in _columns(engine, "run_manifests")
         _run(engine, command.upgrade, "head")
         assert "components" in _columns(engine, "run_manifests")
+
+
+class TestForeignKeyOrdering:
+    """SQLite accepts a `CREATE TABLE` whose foreign key targets a table that
+    does not exist yet — it only checks FK targets lazily, never at DDL time.
+    Every test above runs against SQLite (by design: no Docker, portable), so
+    none of them can see this class of bug.
+
+    Postgres is not so forgiving: it validates a foreign key's target the
+    moment the `CREATE TABLE` runs. `0001_baseline` created `artifacts`
+    (referencing `runs`) eleven tables before it created `runs` — invisible
+    here, and a crash loop on the very first boot of a real deployment. The
+    fix is a real cycle, not just a reorder: `artifacts.run_id` points at
+    `runs`, and `runs.root_artifact_id` points back at `artifacts`. `runs` is
+    now created first without that one column's constraint, and it is closed
+    with `ALTER TABLE` once `artifacts` exists — which means the downgrade has
+    the same ordering hazard in reverse and needs the same care dropping it.
+
+    These tests render each migration's DDL for the postgresql dialect via
+    Alembic's own `--sql` offline mode — real SQL, no database — and replay it
+    against the constraint rule Postgres actually enforces, statement by
+    statement, in emitted order.
+    """
+
+    _CREATE_TABLE = re.compile(r"CREATE TABLE (\w+) \((.*?)\n\);", re.DOTALL)
+    _CONSTRAINT_FK = re.compile(r"CONSTRAINT (\w+) FOREIGN KEY\([^)]*\) REFERENCES (\w+)")
+    _ALTER_ADD_FK = re.compile(r"ALTER TABLE (\w+) ADD " + _CONSTRAINT_FK.pattern)
+    _DROP_TABLE = re.compile(r"DROP TABLE (\w+)")
+    _ALTER_DROP_CONSTRAINT = re.compile(r"ALTER TABLE (\w+) DROP CONSTRAINT (\w+)")
+
+    @pytest.fixture
+    def offline_sql(self, monkeypatch: pytest.MonkeyPatch) -> tuple[str, str]:
+        """(upgrade SQL, downgrade SQL) for the whole revision chain, rendered
+        for postgresql regardless of what this environment's own database URL
+        happens to be — `env.py` is reloaded fresh per Alembic command, so
+        patching the settings function it imports from is enough."""
+        import core.config as config_module
+
+        class _FakeSettings:
+            database_url = "postgresql+psycopg://x/y"
+
+        monkeypatch.setattr(config_module, "get_settings", lambda: _FakeSettings())
+
+        config = _alembic_config()
+        up_buf, down_buf = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(up_buf):
+            command.upgrade(config, "head", sql=True)
+        with contextlib.redirect_stdout(down_buf):
+            command.downgrade(config, "head:base", sql=True)
+        return up_buf.getvalue(), down_buf.getvalue()
+
+    def test_a_create_table_never_references_a_table_that_does_not_exist_yet(
+        self, offline_sql: tuple[str, str]
+    ) -> None:
+        upgrade_sql, _ = offline_sql
+        events: list[tuple[int, str, str, str]] = [
+            (m.start(), "create", m.group(1), m.group(2))
+            for m in self._CREATE_TABLE.finditer(upgrade_sql)
+        ] + [
+            (m.start(), "alter_add", m.group(1), m.group(3))
+            for m in self._ALTER_ADD_FK.finditer(upgrade_sql)
+        ]
+        events.sort(key=lambda event: event[0])
+
+        created: set[str] = set()
+        for _, kind, first, second in events:
+            if kind == "create":
+                name, body = first, second
+                targets = set(self._CONSTRAINT_FK.findall(body))
+                target_tables = {table for _name, table in targets} - {name}
+                missing = target_tables - created
+                assert not missing, f"CREATE TABLE {name} references {missing} too early"
+                created.add(name)
+            else:
+                from_table, to_table = first, second
+                assert from_table in created, f"ALTER TABLE {from_table} before it exists"
+                assert to_table in created, f"{from_table} references {to_table} too early"
+
+    def test_a_drop_table_never_leaves_a_dangling_reference_to_it(
+        self, offline_sql: tuple[str, str]
+    ) -> None:
+        upgrade_sql, downgrade_sql = offline_sql
+
+        fk_edges: dict[str, tuple[str, str]] = {}
+        for m in self._CREATE_TABLE.finditer(upgrade_sql):
+            table, body = m.group(1), m.group(2)
+            for name, target in self._CONSTRAINT_FK.findall(body):
+                fk_edges[name] = (table, target)
+        for m in self._ALTER_ADD_FK.finditer(upgrade_sql):
+            fk_edges[m.group(2)] = (m.group(1), m.group(3))
+
+        events: list[tuple[int, str, str, str]] = [
+            (m.start(), "drop_table", m.group(1), "")
+            for m in self._DROP_TABLE.finditer(downgrade_sql)
+        ] + [
+            (m.start(), "drop_constraint", m.group(1), m.group(2))
+            for m in self._ALTER_DROP_CONSTRAINT.finditer(downgrade_sql)
+        ]
+        events.sort(key=lambda event: event[0])
+
+        live = set(fk_edges)
+        dropped: set[str] = set()
+        for _, kind, first, second in events:
+            if kind == "drop_constraint":
+                assert first == fk_edges[second][0]
+                live.discard(second)
+            else:
+                table = first
+                blockers = {
+                    name
+                    for name in live
+                    if fk_edges[name][1] == table
+                    and fk_edges[name][0] != table
+                    and fk_edges[name][0] not in dropped
+                }
+                assert not blockers, f"DROP TABLE {table} while {blockers} still reference it"
+                dropped.add(table)
+                live -= {name for name in live if fk_edges[name][0] == table}

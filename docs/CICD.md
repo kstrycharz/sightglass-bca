@@ -186,19 +186,25 @@ travel to CI" is a convention that the first person to run `curl` breaks.
 ### First start
 
 Authentication is on by default. A deployment with no tokens mints one admin
-token at startup and prints it once:
+token on request, once, rather than printing it to a log at startup — a
+console banner is easy to miss, and impossible to recover once it scrolls
+past. Open the dashboard and follow its setup wizard, or mint it directly for
+a headless environment:
 
 ```bash
-docker compose logs api | grep -A6 "bootstrap admin token"
+curl -X POST http://localhost:8000/api/setup/bootstrap
 ```
 
-Store it, then mint real ones and revoke the bootstrap:
+Store the token it returns, then mint a scoped one for the pipeline and revoke
+the bootstrap:
 
 ```bash
 docker compose exec api sightglass token create ci-pipeline --scope ci --expires-in-days 90
-docker compose exec api sightglass token create dashboard   --scope admin
 docker compose exec api sightglass token revoke bootstrap
 ```
+
+(Skip the `dashboard` token step from earlier versions of this doc — the
+dashboard now mints and stores its own via the setup wizard.)
 
 `sightglass token` talks to the database, not the API, and so runs on the
 server. That is deliberate: an endpoint that mints credentials is a
