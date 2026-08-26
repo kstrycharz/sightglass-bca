@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from typing import Annotated, Any
 
 import structlog
@@ -26,7 +26,7 @@ from api.schemas.models import (
 from core.auth import Scope
 from core.db import get_session, session_scope
 from core.models import Artifact, Finding, FindingLocation, Run, RunStage
-from core.models.enums import RunStatus
+from core.models.enums import RunStatus, StageStatus
 from core.pipeline.ingest import AttestationRequired, ingest_artifact
 
 log = structlog.get_logger(__name__)
@@ -129,6 +129,89 @@ def get_run(run_id: str, session: Annotated[Session, Depends(get_session)]) -> R
     )
 
 
+# The phases a scan actually passes through, in order. These are derived from
+# observable state — which stage rows exist and what status they carry — not
+# from a timer. A progress bar that advances on a clock rather than on work is
+# a lie that costs the operator the one thing they came to the page for.
+#
+# `index` and `report` have no stage row of their own: they are the pipeline
+# doing its own work between analyzers (materialising 68 976 artifact rows,
+# then correlating evidence into findings and writing the manifest). They are
+# named because they are slow enough to look like a hang otherwise.
+SCAN_PHASES: tuple[tuple[str, str], ...] = (
+    ("queued", "Waiting for a worker"),
+    ("unpack", "Recursively extracting nested containers"),
+    ("index", "Recording the artifact tree"),
+    ("static", "Extracting strings and matching rules"),
+    ("report", "Correlating evidence into findings"),
+    ("done", "Complete"),
+)
+
+
+def _phase(run: Run, stages: Sequence[RunStage]) -> str:
+    """Which phase this run is in right now.
+
+    Reads the stage rows rather than tracking state separately, so the phase
+    cannot drift from what the pipeline actually did.
+    """
+    if RunStatus(run.status).is_terminal:
+        return "done"
+
+    by_analyzer = {stage.analyzer: StageStatus(stage.status) for stage in stages}
+    unpack = by_analyzer.get("unpack")
+    static = by_analyzer.get("static")
+
+    # A stage row is committed before its container starts, so the row existing
+    # says the phase has begun — not that it is over. PENDING belongs here with
+    # RUNNING because it is the column default, and reading it as "finished"
+    # reported the last phase for the whole of the longest one.
+    unfinished = (StageStatus.PENDING, StageStatus.RUNNING)
+
+    if static is not None:
+        # Once static is done but the run is not, evidence is being correlated
+        # into findings and the manifest written.
+        return "static" if static in unfinished else "report"
+    if unpack is not None:
+        # Unpack done, static not started: the pipeline is writing one artifact
+        # row per extracted file.
+        return "unpack" if unpack in unfinished else "index"
+    return "queued"
+
+
+def _expected_duration_s(session: Session, run: Run) -> float | None:
+    """How long this same artifact took the last time it was scanned.
+
+    Deliberately not a model or an average across artifacts: scan time is
+    dominated by how many files an artifact unpacks to, so the only estimate
+    worth showing is one drawn from the same bytes. Absent for a first scan,
+    and the UI says so rather than inventing a number.
+    """
+    root = session.scalars(
+        select(Artifact).where(Artifact.run_id == run.id, Artifact.parent_id.is_(None))
+    ).first()
+    if root is None:
+        return None
+
+    previous = session.execute(
+        select(Run.started_at, Run.finished_at)
+        .join(Artifact, Artifact.run_id == Run.id)
+        .where(
+            Artifact.parent_id.is_(None),
+            Artifact.sha256 == root.sha256,
+            Run.id != run.id,
+            Run.status == RunStatus.COMPLETED,
+            Run.started_at.is_not(None),
+            Run.finished_at.is_not(None),
+        )
+        .order_by(Run.finished_at.desc())
+        .limit(1)
+    ).first()
+    if previous is None:
+        return None
+    started, finished = previous
+    return (finished - started).total_seconds()
+
+
 @router.get("/{run_id}/events")
 async def stream_events(run_id: str) -> StreamingResponse:
     """Server-sent progress.
@@ -139,6 +222,9 @@ async def stream_events(run_id: str) -> StreamingResponse:
 
     async def generate() -> AsyncIterator[str]:
         last: str | None = None
+        expected_s: float | None = None
+        expected_resolved = False
+
         for _ in range(600):  # ~20 minutes at 2s, then the client reconnects
             with session_scope() as session:
                 run = session.get(Run, run_id)
@@ -146,8 +232,18 @@ async def stream_events(run_id: str) -> StreamingResponse:
                     yield _sse({"error": "run not found"})
                     return
                 stages = session.scalars(select(RunStage).where(RunStage.run_id == run_id)).all()
+
+                # Resolved once: the previous run's duration cannot change
+                # while this one is in flight, and it is the most expensive
+                # query here.
+                if not expected_resolved:
+                    expected_s = _expected_duration_s(session, run)
+                    expected_resolved = True
+
+                started = run.started_at
                 payload = {
                     "status": run.status,
+                    "phase": _phase(run, stages),
                     "stages": [
                         {"analyzer": s.analyzer, "status": s.status, "duration_s": s.duration_s}
                         for s in stages
@@ -156,6 +252,15 @@ async def stream_events(run_id: str) -> StreamingResponse:
                         select(func.count()).select_from(Finding).where(Finding.run_id == run_id)
                     )
                     or 0,
+                    # Climbs while the tree is being recorded, which is the one
+                    # phase with no analyzer of its own and the one that most
+                    # looks like a hang on a large installer.
+                    "artifact_count": session.scalar(
+                        select(func.count()).select_from(Artifact).where(Artifact.run_id == run_id)
+                    )
+                    or 0,
+                    "started_at": started.isoformat() if started else None,
+                    "expected_s": expected_s,
                 }
                 terminal = RunStatus(run.status).is_terminal
 

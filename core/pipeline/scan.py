@@ -181,7 +181,11 @@ def _execute(run: Run, session: Session, run_dir: Path) -> ScanOutcome:
 
     # --- S2: unpack ------------------------------------------------------
     unpack_result, unpack_payload = _run_unpack(run, session, root, unpack_in, unpack_out)
+    _checkpoint(session, run.id, "index")
     artifacts_by_path = _materialise_tree(run, session, root, unpack_payload, unpack_out)
+    # The artifact count is the scan's scale, and this is the moment it becomes
+    # known. It is also the phase with no analyzer of its own.
+    _checkpoint(session, run.id, "indexed")
 
     # --- stage everything for the scanner --------------------------------
     root_staged = scan_in / "root" / root.name
@@ -203,6 +207,9 @@ def _execute(run: Run, session: Session, run_dir: Path) -> ScanOutcome:
 
     # --- S3: static scan over the whole tree ------------------------------
     static_result, static_payload = _run_static(run, session, root, scan_in, rules_dir, scan_out)
+    # Publishes the finished static stage, which is what moves the run into its
+    # last phase: correlating evidence into findings and writing the manifest.
+    _checkpoint(session, run.id, "report")
 
     evidence = _to_evidence(run, static_payload, staged_paths, root)
     session.add_all(evidence)
@@ -269,14 +276,36 @@ def _execute(run: Run, session: Session, run_dir: Path) -> ScanOutcome:
 
 
 # --- stages ---------------------------------------------------------------
+def _checkpoint(session: Session, run_id: str, phase: str) -> None:
+    """Make progress so far visible to everything outside this transaction.
+
+    The scan runs as one long transaction, so without this the stage rows and
+    the artifact tree are invisible until it ends — the progress panel could
+    only ever show `queued` and then, minutes later, the finished report. Every
+    phase in between existed only in an uncommitted transaction.
+
+    Committing at a phase boundary also means a scan killed mid-flight leaves
+    behind what it actually completed rather than nothing, which is what lets
+    the recovery sweep and the DEGRADED status say something true about it.
+    """
+    session.commit()
+    log.info("scan.phase", run_id=run_id, phase=phase)
+
+
 def _run_unpack(
     run: Run, session: Session, root: Artifact, staging: Path, results: Path
 ) -> tuple[SandboxResult, dict[str, Any]]:
     _grant_analyzer_access(results)
     stage = RunStage(run_id=run.id, artifact_id=root.id, analyzer="unpack")
     stage.started_at = datetime.now(UTC)
+    # RUNNING, not the PENDING default: this row is committed before the
+    # container starts, so anything reading it while the analyzer works would
+    # otherwise be told the stage had not begun.
+    stage.status = StageStatus.RUNNING
     session.add(stage)
-    session.flush()
+    # Before the container starts, not after: unpacking a large installer takes
+    # long enough that a panel showing nothing looks like a stalled run.
+    _checkpoint(session, run.id, "unpack")
 
     driver = driver_from_settings()
     try:
@@ -321,8 +350,13 @@ def _run_static(
 ) -> tuple[SandboxResult, dict[str, Any]]:
     stage = RunStage(run_id=run.id, artifact_id=root.id, analyzer="static")
     stage.started_at = datetime.now(UTC)
+    # RUNNING, not the PENDING default: this row is committed before the
+    # container starts, so anything reading it while the analyzer works would
+    # otherwise be told the stage had not begun.
+    stage.status = StageStatus.RUNNING
     session.add(stage)
-    session.flush()
+    # The longest phase by far — six minutes on a 213 MB installer.
+    _checkpoint(session, run.id, "static")
 
     command: list[str] = [
         "--recon",

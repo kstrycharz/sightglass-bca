@@ -128,6 +128,48 @@ Append-only; supersede rather than edit.
 
 Reverse-chronological.
 
+### 2026-08-26 — a progress bar that reports work, not time
+**Built:** live scan progress. Five phases derived from stage rows — queued,
+unpack, index, scan, report — a determinate bar, a live elapsed timer, the
+artifact count as it climbs, and, where the same artifact has been scanned
+before, that run's duration as an estimate. The bar never interpolates inside a
+phase: nothing is known about progress within one, and a bar advancing on a
+clock is inventing the only thing the operator opened the page for.
+
+**The feature was mostly a bug hunt.** Two of the five phases (`index`,
+`report`) have no analyzer of their own — they are the pipeline writing 69 000
+artifact rows, then correlating evidence — and they are exactly the windows
+that looked like a hang.
+
+*Every phase was invisible.* Stage rows and artifacts are written inside the
+scan's single long transaction, so nothing outside it saw them until the run
+finished. The panel could only ever show `queued`, then the finished report
+seven minutes later. The pipeline now commits at each phase boundary, which
+also means a scan killed mid-flight leaves behind what it actually completed.
+
+*Then the phase was wrong.* `RunStage.status` defaults to PENDING and the row
+is committed before its container starts, so "row exists" was read as "stage
+finished" — the panel reported `report` for the whole six-minute static scan,
+sitting one phase from the end while the work had barely begun. Stages now
+start RUNNING, and `_phase` treats PENDING as unfinished so the default cannot
+lie again.
+
+*And the widget hung on degraded runs.* It treated only `completed`/`failed` as
+terminal, so `RunStatus.DEGRADED` — added the day before — would have streamed
+for ever and never shown the report.
+
+**Also fixed:** `duration()` rounded the seconds remainder rather than the
+total, so 419.6s rendered as "6m 60s". Pre-existing, on every duration in the
+dashboard.
+
+**Verified against a live scan**, which is the only place any of this was
+visible: Unpack at 20% with `unpack running`, Index at 40%, Scan at 60% with
+`68,976 artifacts found` and `unpack completed 19.5s`, then the terminal
+refresh into the report.
+
+**Verified:** 491 unit tests (18 new), mypy strict, ruff clean, `tsc` clean.
+
+
 ### 2026-08-25 — migrations; a failed analyzer can no longer look clean
 **The failure that set the agenda.** Adding a `components` column to
 `RunManifest` and redeploying broke the stack: `create_all()` reported success

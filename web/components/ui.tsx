@@ -272,8 +272,10 @@ export function duration(seconds: number | null | undefined): string {
   if (seconds === null || seconds === undefined) return "—";
   if (seconds < 1) return `${Math.round(seconds * 1000)}ms`;
   if (seconds < 60) return `${seconds.toFixed(1)}s`;
-  const minutes = Math.floor(seconds / 60);
-  return `${minutes}m ${Math.round(seconds % 60)}s`;
+  // Rounded to whole seconds *before* splitting. Rounding the remainder
+  // instead lets it reach 60, so 419.6s rendered as "6m 60s".
+  const total = Math.round(seconds);
+  return `${Math.floor(total / 60)}m ${total % 60}s`;
 }
 
 export function relativeTime(iso: string | null): string {
