@@ -36,6 +36,9 @@ x-backend-env: &backend-env
   # CPU quota per analyzer container. The static analyzer parallelises
   # across it; see Settings.analyzer_cpus for the measurements.
   SIGHTGLASS_ANALYZER_CPUS: ${SIGHTGLASS_ANALYZER_CPUS:-4}
+  # Memory ceiling per analyzer container. A 213 MB installer unpacks to
+  # ~69 000 files, which is the shape that pushes against this.
+  SIGHTGLASS_ANALYZER_MEMORY_GB: ${SIGHTGLASS_ANALYZER_MEMORY_GB:-8}
 
 services:
   postgres:

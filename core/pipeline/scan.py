@@ -236,6 +236,7 @@ def _run_unpack(
                 analyzer="unpack",
                 timeout_s=UNPACK_TIMEOUT_S,
                 nano_cpus=_analyzer_nano_cpus(),
+                mem_limit_bytes=_analyzer_memory_bytes(),
                 mounts=(
                     BindMount(str(staging), INPUT_DIR, MountMode.READ_ONLY),
                     BindMount(str(results), OUTPUT_DIR, MountMode.READ_WRITE),
@@ -288,6 +289,7 @@ def _run_static(
                 # The static analyzer parallelises across this quota; see
                 # Settings.analyzer_cpus for the measurements.
                 nano_cpus=_analyzer_nano_cpus(),
+                mem_limit_bytes=_analyzer_memory_bytes(),
                 mounts=(
                     BindMount(str(staging), INPUT_DIR, MountMode.READ_ONLY),
                     BindMount(str(rules_dir), RULES_MOUNT, MountMode.READ_ONLY),
@@ -526,6 +528,11 @@ def _link_previous_run(run: Run, root: Artifact, session: Session) -> None:
     ).first()
     if previous is not None:
         run.previous_run_id = previous.id
+
+
+def _analyzer_memory_bytes() -> int:
+    """Memory ceiling for an analyzer container, from settings."""
+    return int(max(1.0, get_settings().analyzer_memory_gb) * 1024**3)
 
 
 def _analyzer_nano_cpus() -> int:

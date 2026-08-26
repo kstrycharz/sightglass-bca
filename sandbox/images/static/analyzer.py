@@ -53,9 +53,9 @@ MIN_FILES_FOR_POOL = 8
 # (~600k strings) and fatal for a 69 000-file one: the same installer, once its
 # Electron archive actually unpacked, produced tens of millions and OOM-killed
 # a 4 GiB analyzer 256 seconds in. The cap bounds the worst case to a few
-# hundred MB; when it bites, the result says so rather than quietly reporting a
-# partial inventory as a complete one.
-MAX_RECON_STRINGS = 3_000_000
+# hundred MB alongside eight worker processes; when it bites, the result says
+# so rather than quietly reporting a partial inventory as a complete one.
+MAX_RECON_STRINGS = 1_500_000
 
 # Magic bytes are enough for S1's purposes here; full LIEF/pefile parsing lands
 # with the identify analyzer. This exists so the report can say "PE32+
@@ -512,26 +512,53 @@ def run_recon(artifacts: list[Path], *, workers: int = 1) -> Any:
     across 8 workers, sweep 2.9s either way, and the collected list comes back
     byte-identical because `map` preserves submission order.
     """
-    chunks = _map_ordered(
-        extract_for_recon,
-        [str(p) for p in artifacts],
-        workers,
-        chunksize=8,
-        what="recon",
-    )
-
+    jobs = [str(p) for p in artifacts]
     collected: list[tuple[str, str, int, str]] = []
     truncated = False
-    for chunk in chunks:
-        if len(collected) >= MAX_RECON_STRINGS:
-            truncated = True
-            break
+
+    def absorb(chunk: list[tuple[str, str, int, str]]) -> bool:
+        """Take what fits. Returns False once the cap is reached."""
+        nonlocal truncated
         room = MAX_RECON_STRINGS - len(collected)
+        if room <= 0:
+            truncated = True
+            return False
         if len(chunk) > room:
             collected.extend(chunk[:room])
             truncated = True
-            break
+            return False
         collected.extend(chunk)
+        return True
+
+    # Consumed lazily and abandoned at the cap. `_map_ordered` wraps the pool
+    # in `list()`, which materialises every chunk for every file before any cap
+    # can apply — that is not a slower path, it is the OOM itself: 68 976 files
+    # produced enough strings to kill a 4 GiB analyzer 319 seconds in, with the
+    # cap in place and doing nothing.
+    if workers <= 1:
+        for job in jobs:
+            if not absorb(extract_for_recon(job)):
+                break
+    else:
+        try:
+            with ProcessPoolExecutor(max_workers=workers) as pool:
+                iterator = pool.map(extract_for_recon, jobs, chunksize=8)
+                for chunk in iterator:
+                    if not absorb(chunk):
+                        # Stop feeding the pool; the remaining futures are
+                        # cancelled when the context manager exits.
+                        break
+        except Exception as exc:  # any pool failure falls back to sequential
+            print(
+                f"parallel recon unavailable ({type(exc).__name__}: {exc}); "
+                "falling back to sequential",
+                file=sys.stderr,
+            )
+            collected.clear()
+            truncated = False
+            for job in jobs:
+                if not absorb(extract_for_recon(job)):
+                    break
 
     if truncated:
         print(

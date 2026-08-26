@@ -80,6 +80,15 @@ class Settings(BaseSettings):
     artifact can burn before that timeout fires, which is why it stays a
     modest default rather than "all of them"."""
 
+    analyzer_memory_gb: float = 4.0
+    """Memory ceiling for an analyzer container, in GiB.
+
+    A ceiling rather than a target: the analyzer is deliberately bounded so a
+    hostile artifact cannot exhaust the host, and an OOM is reported as a
+    degraded stage rather than a crash (ADR-0008). Raise it for fleets that
+    routinely scan large Electron or firmware trees — a 213 MB installer
+    unpacks to ~69 000 files, which is the shape that pushes against it."""
+
     reaper_max_age_hours: int = 6
     reaper_interval_seconds: int = 300
 
