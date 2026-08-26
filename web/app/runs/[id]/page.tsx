@@ -120,7 +120,7 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
             <div className="grid gap-3 sm:grid-cols-2 lg:col-span-4 lg:grid-cols-1">
               <Metric
                 label="Files analysed"
-                value={run.artifact_count}
+                value={run.artifact_count.toLocaleString()}
                 hint={
                   run.artifact_count > 1 ? "unpacked recursively" : "no nested containers"
                 }
