@@ -64,6 +64,10 @@ class NewProvider:
     model: str
     base_url: str = ""
     num_ctx: int | None = None
+    is_local: bool | None = None
+    """Recorded because most LiteLLM providers carry no base URL, so locality
+    cannot be re-derived from the config later — and it is what decides whether
+    the egress policy permits this provider at all."""
 
 
 def _config_path() -> Path:
@@ -134,6 +138,8 @@ def apply_update(update: LlmUpdate, *, path: Path | None = None) -> Path:
             entry["base_url"] = new.base_url.strip()
         if new.num_ctx:
             entry["num_ctx"] = int(new.num_ctx)
+        if new.is_local is not None:
+            entry["is_local"] = bool(new.is_local)
         providers[new.name.strip()] = entry
         document["providers"] = providers
 

@@ -26,6 +26,7 @@ interface CatalogEntry {
   key_hint: string;
   key_url: string;
   suggested_models: string[];
+  needs_base_url: boolean;
 }
 
 /**
@@ -172,6 +173,7 @@ function ModelStep() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [connected, setConnected] = useState<string | null>(null);
+  const [showEndpoint, setShowEndpoint] = useState(false);
 
   useEffect(() => {
     fetch("/api/settings/llm/catalog")
@@ -186,6 +188,7 @@ function ModelStep() {
     setBaseUrl(entry.base_url);
     setApiKey("");
     setError(null);
+    setShowEndpoint(false);
   }
 
   async function connect() {
@@ -304,14 +307,29 @@ function ModelStep() {
                 )}
               </Field>
 
-              <Field label="Endpoint">
-                <input
-                  value={baseUrl}
-                  onChange={(e) => setBaseUrl(e.target.value)}
-                  placeholder="https://…"
-                  className="w-full rounded-md border border-border bg-surface px-3 py-1.5 font-mono text-xs"
-                />
-              </Field>
+              {/* Most providers need no endpoint: LiteLLM knows where they
+                  live, and the model prefix is what routes. Only self-hosted
+                  and bring-your-own-gateway entries genuinely require one, so
+                  the field is offered rather than demanded. */}
+              {(chosen.needs_base_url || chosen.is_local || showEndpoint) && (
+                <Field label={chosen.needs_base_url ? "Endpoint" : "Endpoint (optional)"}>
+                  <input
+                    value={baseUrl}
+                    onChange={(e) => setBaseUrl(e.target.value)}
+                    placeholder="https://…"
+                    className="w-full rounded-md border border-border bg-surface px-3 py-1.5 font-mono text-xs"
+                  />
+                </Field>
+              )}
+              {!chosen.needs_base_url && !chosen.is_local && !showEndpoint && (
+                <button
+                  type="button"
+                  onClick={() => setShowEndpoint(true)}
+                  className="text-[11.5px] text-content-subtle underline hover:text-content"
+                >
+                  Use a custom endpoint
+                </button>
+              )}
 
               {chosen.requires_key && (
                 <Field label="API key">

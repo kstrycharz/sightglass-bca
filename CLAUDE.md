@@ -126,12 +126,55 @@ Append-only; supersede rather than edit.
 - **ADR-0024** — Schema changes ship as migrations; start-up refuses a stale schema (2026-08-25)
 - **ADR-0025** — A run is claimed with a conditional UPDATE, committed immediately (2026-08-25)
 - **ADR-0026** — Response models are constructed, not validated from ORM objects (2026-08-25)
+- **ADR-0027** — LiteLLM is the transport; the air gap is enforced above it (2026-08-26)
 
 ---
 
 ## 4. Progress log
 
 Reverse-chronological.
+
+### 2026-08-26 (4) — LiteLLM replaces the hand-written cloud adapters
+**Why:** breadth, from something maintained. Three hand-written adapters
+covered OpenAI-compatible, Anthropic, and Google; LiteLLM covers those and a
+hundred more, and tracking every vendor's wire format is not this project's
+job. The catalog went from 8 providers to 17 by adding rows, not code.
+
+**The part that needed care: LiteLLM has no single egress choke point.**
+Measured rather than assumed, and both obvious mechanisms failed:
+`litellm.client_session` with an httpx request hook fires for the OpenAI family
+and *nothing else* — Anthropic, Gemini, and Groq use their own handlers — and
+an explicit `api_base` is honoured by Anthropic but silently ignored by Gemini.
+Either would have looked like enforcement while quietly permitting egress from
+an air-gapped deployment.
+
+So the guarantee moved up a level, where it is absolute: **a non-local provider
+is never constructed under a deny policy** (ADR-0027). `build_provider` refuses
+it and `load_config` refuses the whole config at start-up, so there is no
+request for LiteLLM to route. Locality comes from the base URL when there is
+one — a config claiming `is_local: true` for `api.openai.com` is still refused —
+and otherwise from what the catalog declared, defaulting to hosted. Seven tests
+hold that line, including the two "must be refused" cases and the URL-wins case.
+
+**Ollama stays on its own adapter.** LiteLLM speaks Ollama, but the native one
+has `warm()` (a cold 9 GB model takes 20+ seconds to page in, and without an
+explicit warm-up that lands on the first candidate and looks like a slow model)
+and a health check that lists pulled models and says `ollama pull X` when one is
+missing. Losing either would be a real regression for the local path, which is
+also the one that needs no vendor breadth.
+
+**What LiteLLM gives back beyond breadth:** typed exceptions. "The API key was
+rejected" and "the model was not found for this key" are different problems
+with different fixes, and every vendor words them differently. `_explain_failure`
+turns them into one sentence an operator can act on, with the key scrubbed.
+
+**Verified end to end**, not just unit-tested: 17 providers listed, a hosted
+provider refused under `egress: deny` in the deployed container, a bad OpenAI
+key rejected with a readable message and rolled back out of the key store, and
+a real `explain` call routed through LiteLLM returning grounded prose in 2.8s.
+
+**Verified:** 543 unit tests, mypy strict, ruff clean, `next build` clean.
+
 
 ### 2026-08-26 (3) — the AI layer that was configurable but never called
 **The finding that set the agenda.** `grep 'role="'` across the codebase

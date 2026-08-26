@@ -416,3 +416,85 @@ unpacks to 68 976 artifacts; no browser renders that, and the exact count stays
 in the summary alongside a flag saying the tree was cut.
 
 ---
+
+## ADR-0027 — LiteLLM is the transport; the air gap is enforced above it
+
+**Date:** 2026-08-26
+**Status:** Accepted
+
+### Context
+
+Provider support was three hand-written adapters (OpenAI-compatible,
+Anthropic, Google). Each vendor changes its wire format eventually, and the
+list only grows. LiteLLM is maintained, covers well over a hundred providers,
+and normalises their errors into typed exceptions.
+
+The objection to adopting it was the air-gap guarantee. `EgressPolicyGuard`
+runs immediately before every HTTP call, and `is_local` — derived from the
+resolved URL — is what the redaction layer keys off to decide whether
+plaintext could ever be sent. Putting a library between this process and the
+socket appeared to give that up.
+
+Two mechanisms were tested for intercepting LiteLLM's egress. Both failed:
+
+* Setting `litellm.client_session` to an `httpx.Client` with a request event
+  hook catches the OpenAI family and nothing else. Anthropic, Gemini, and Groq
+  route through their own HTTP handlers and never touch it.
+* Passing an explicit `api_base` is honoured by Anthropic and **silently
+  ignored by Gemini**.
+
+Either would have looked like enforcement in review while permitting egress
+from a deployment configured to forbid it.
+
+### Decision
+
+Adopt LiteLLM as the transport for every provider except local Ollama, and
+enforce the egress policy **at provider construction and at config load**
+rather than at the HTTP call.
+
+* `build_provider` refuses to construct a non-local provider when the policy
+  denies egress, so no request exists for LiteLLM to route.
+* `load_config` applies the same check to every provider in the file, so a
+  deployment fails at start-up rather than mid-scan.
+* Locality is taken from the base URL when there is one, so a config asserting
+  `is_local: true` for a public host is still refused. With no URL — most
+  LiteLLM providers have none, because the model prefix is what routes — it
+  falls back to the catalog's declaration, defaulting to hosted.
+* `EgressPolicyGuard.check_remote_allowed()` exists for the case where the
+  destination is not knowable. Under a deny policy, "I cannot tell you where
+  this goes" is refused.
+
+Local Ollama keeps its own adapter. LiteLLM speaks Ollama, but the native
+adapter has `warm()` — a cold 9 GB model takes 20+ seconds to page in, and
+without an explicit warm-up that cost lands on the first candidate and reads as
+a slow model — and a health check that lists pulled models and names the
+`ollama pull` command when one is missing.
+
+### Consequences
+
+The guarantee is now coarser and stronger. Coarser because it is per-provider
+rather than per-request; stronger because it does not depend on intercepting a
+library whose internals vary by vendor. An air-gapped deployment cannot hold a
+working hosted provider at all.
+
+The per-request URL check remains where a base URL exists, as defence in depth,
+along with `litellm.telemetry = False` and `num_retries = 0`.
+
+The cost is a large dependency in an image that also runs the orchestrator, and
+trusting LiteLLM not to contact a host other than the one implied by the model
+string. That trust is bounded by the construction-time refusal: under a deny
+policy there is no configured provider for it to contact anything on behalf of.
+
+### Alternatives rejected
+
+**Keep the hand-written adapters.** Correct on enforcement, wrong on
+maintenance: six vendors was already the ceiling of what was worth tracking by
+hand, and the request was explicitly for breadth from a maintained project.
+
+**Route everything through a LiteLLM Proxy instance.** Adds a service to
+operate and does not remove the question — it relocates it to the proxy's
+configuration, which is further from the code that makes the guarantee.
+
+**Patch LiteLLM's HTTP handlers at import.** Enforcement by monkey-patching a
+dependency's internals is enforcement that breaks silently on upgrade, which is
+the specific failure mode this decision exists to avoid.

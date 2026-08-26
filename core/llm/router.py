@@ -136,10 +136,16 @@ def _validate(config: LLMConfig, *, air_gapped: bool) -> None:
     )
     for name, spec in config.providers.items():
         base_url = spec.get("base_url")
-        if not base_url:
-            continue
         try:
-            guard.check(base_url)
+            if base_url:
+                guard.check(base_url)
+            elif not spec.get("is_local", False):
+                # Most LiteLLM providers carry no base URL — the model prefix
+                # is what routes, and the library resolves the endpoint itself.
+                # Skipping those would mean an air-gapped deployment could hold
+                # a working OpenAI provider, which is the whole thing this
+                # check exists to prevent.
+                guard.check_remote_allowed(f"provider {name!r}")
         except Exception as exc:
             raise LLMConfigError(
                 f"provider {name!r} would be blocked by the egress policy: {exc}"
@@ -181,50 +187,41 @@ def build_provider(config: LLMConfig, name: str) -> LLMProvider:
 
     api_key = resolve_api_key(name, spec)
 
-    if kind in ("openai", "openai_compatible", "azure", "vllm"):
-        # One adapter for every endpoint that speaks the OpenAI chat shape.
-        # The aliases exist because operators reach for the vendor's name.
-        from core.llm.providers.openai_compatible import OpenAICompatibleProvider
+    # Everything that is not local Ollama goes through LiteLLM. `kind` is kept
+    # as a vendor name in the config because that is what an operator writes,
+    # but it selects no code path of its own — the model string carries the
+    # provider ("anthropic/claude-...", "gemini/gemini-...") and LiteLLM routes
+    # on that.
+    from core.llm.providers.litellm_provider import LiteLLMProvider
 
-        return OpenAICompatibleProvider(
-            model=spec["model"],
-            name=name,
-            base_url=spec.get("base_url", "https://api.openai.com/v1"),
-            api_key=api_key,
-            guard=guard,
-        )
+    base_url = str(spec.get("base_url", "") or "")
+    declared_local = spec.get("is_local")
 
-    if kind == "anthropic":
-        from core.llm.providers.anthropic import AnthropicProvider
+    # Locality decides two things: whether the egress policy permits this
+    # provider at all, and whether plaintext could ever be sent to it. Prefer
+    # the URL when there is one, since that is checkable; fall back to what the
+    # catalog declared; default to "hosted", which is the safe direction.
+    if base_url:
+        is_local_endpoint = guard.is_local(base_url)
+    elif declared_local is not None:
+        is_local_endpoint = bool(declared_local)
+    else:
+        is_local_endpoint = False
 
-        return AnthropicProvider(
-            model=spec["model"],
-            name=name,
-            base_url=spec.get("base_url", "https://api.anthropic.com/v1"),
-            api_key=api_key,
-            guard=guard,
-        )
+    # The air-gap guarantee, enforced where it is absolute: a hosted provider
+    # is never constructed under a deny policy, so there is no request for
+    # LiteLLM to route. It has no single interceptable choke point — measured,
+    # not assumed; see the module docstring — so this is the check that counts.
+    if not is_local_endpoint:
+        guard.check_remote_allowed(f"provider {name!r} ({kind})")
 
-    if kind in ("google", "gemini"):
-        from core.llm.providers.google import GoogleProvider
-
-        return GoogleProvider(
-            model=spec["model"],
-            name=name,
-            base_url=spec.get(
-                "base_url", "https://generativelanguage.googleapis.com/v1beta"
-            ),
-            api_key=api_key,
-            guard=guard,
-        )
-
-    # Bedrock still lands later: it authenticates with SigV4 rather than a
-    # bearer token, so it needs credential handling none of the above share.
-    # Failing by name beats a generic KeyError three frames deep.
-    raise NotImplementedError(
-        f"provider kind {kind!r} is not implemented. Available: 'ollama', 'openai' "
-        "(and any OpenAI-compatible endpoint), 'anthropic', 'google'. "
-        "Bedrock arrives with SigV4 support."
+    return LiteLLMProvider(
+        model=spec["model"],
+        name=name,
+        base_url=base_url,
+        api_key=api_key,
+        guard=guard,
+        is_local_endpoint=is_local_endpoint,
     )
 
 

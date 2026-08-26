@@ -140,6 +140,32 @@ class EgressPolicyGuard:
     def is_local(self, url: str) -> bool:
         return _is_local_host(urlparse(url).hostname or "")
 
+    def check_remote_allowed(self, description: str) -> None:
+        """Apply the policy when the destination host is not knowable.
+
+        LiteLLM resolves some providers' endpoints internally and honours no
+        `api_base` override for them, so there are calls whose URL this process
+        never sees. Those still have to obey the policy, and the only safe
+        reading of "I cannot tell you where this goes" under a deny policy is
+        to refuse.
+        """
+        if self._air_gapped:
+            raise EgressBlocked(
+                f"air-gapped mode forbids {description}, whose endpoint is "
+                "resolved by the provider library; configure a local provider"
+            )
+        if not self._allow_egress:
+            raise EgressBlocked(
+                f"egress policy is 'deny' and {description} is a hosted provider; "
+                "set SIGHTGLASS_EGRESS_POLICY=allow to permit cloud providers"
+            )
+        if self._allowed_hosts:
+            raise EgressBlocked(
+                f"an egress allowlist is set, but {description} resolves its own "
+                "endpoint, so it cannot be checked against it; use a provider "
+                "with an explicit base URL instead"
+            )
+
 
 def _is_local_host(host: str) -> bool:
     if host in ("localhost", "localhost.localdomain") or host.endswith(".local"):

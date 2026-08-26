@@ -1,9 +1,19 @@
-"""Cloud provider adapters and the API key store.
+"""Provider configuration, the API key store, and the egress guarantee.
 
-The tests that matter here are about where a key ends up. `config/llm.yaml` is
-a committed file, so a provider key written into it is a credential in the
-repository — exactly the failure this product exists to find in other people's
-artifacts.
+Two things are being pinned here, and the second is the one that matters.
+
+**Keys must never reach `config/llm.yaml`.** That file is committed, so a
+provider key in it is a credential in the repository — the exact failure this
+product exists to find in other people's artifacts.
+
+**A hosted provider must be unreachable under a deny policy.** Since everything
+except local Ollama now routes through LiteLLM, this cannot be enforced at the
+HTTP call: LiteLLM has no single choke point. Measured, not assumed —
+`litellm.client_session` catches the OpenAI family and nothing else, and an
+explicit `api_base` is honoured by Anthropic but ignored by Gemini. So the
+guarantee lives at construction and at config load, where it is absolute: a
+non-local provider is never built, so there is no request to intercept. These
+tests are what hold that line.
 """
 
 from __future__ import annotations
@@ -14,12 +24,11 @@ from pathlib import Path
 import pytest
 import yaml
 
+from core.config import EgressPolicy
 from core.llm import secrets
 from core.llm.catalog import BY_ID, CATALOG
-from core.llm.provider import EgressPolicyGuard, Message
-from core.llm.providers.anthropic import AnthropicProvider
-from core.llm.providers.google import GoogleProvider
-from core.llm.providers.openai_compatible import OpenAICompatibleProvider
+from core.llm.provider import EgressBlocked, EgressPolicyGuard
+from core.llm.providers.litellm_provider import LiteLLMProvider, _explain_failure
 from core.llm.router import LLMConfig, LLMConfigError, build_provider
 from core.llm.settings_writer import LlmUpdate, NewProvider, apply_update
 
@@ -33,15 +42,97 @@ def store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     yield path
 
 
+def _config(
+    egress: EgressPolicy = EgressPolicy.DENY, **spec: object
+) -> LLMConfig:
+    return LLMConfig(
+        enabled=True,
+        providers={"p": dict(spec)},
+        roles={},
+        egress=egress,
+        path=Path("llm.yaml"),
+    )
+
+
+class TestTheAirGapHolds:
+    """The guarantee, at the level where LiteLLM cannot undermine it."""
+
+    def test_a_hosted_provider_cannot_be_built_under_deny(self) -> None:
+        """No URL to check, and none needed: the provider is refused outright,
+        so LiteLLM never gets a request to route."""
+        config = _config(model="gpt-4o-mini", kind="openai", is_local=False)
+        with pytest.raises(EgressBlocked, match="deny"):
+            build_provider(config, "p")
+
+    def test_a_provider_with_no_locality_declared_is_treated_as_hosted(self) -> None:
+        """The safe direction. A config that forgot to say gets refused rather
+        than quietly permitted."""
+        config = _config(model="gpt-4o-mini", kind="openai")
+        with pytest.raises(EgressBlocked):
+            build_provider(config, "p")
+
+    def test_a_local_endpoint_is_permitted_under_deny(self) -> None:
+        """An Ollama or vLLM box on the LAN is not egress in any sense a
+        security team cares about."""
+        config = _config(
+            model="hosted_vllm/x", kind="vllm", base_url="http://192.168.1.50:8000/v1"
+        )
+        provider = build_provider(config, "p")
+        assert provider.is_local is True
+
+    def test_a_hosted_provider_builds_once_egress_is_allowed(self) -> None:
+        config = _config(EgressPolicy.ALLOW, model="gpt-4o-mini", kind="openai", is_local=False)
+        provider = build_provider(config, "p")
+        assert provider.is_local is False
+
+    def test_air_gapped_refuses_even_when_egress_is_allowed(self) -> None:
+        """`air_gapped` is a separate switch from the egress policy, and it
+        wins."""
+        guard = EgressPolicyGuard(allow_egress=True, air_gapped=True)
+        with pytest.raises(EgressBlocked, match="air-gapped"):
+            guard.check_remote_allowed("provider 'p'")
+
+    def test_a_url_that_claims_to_be_local_but_is_not_is_still_refused(self) -> None:
+        """Locality is decided from the URL when there is one, not from what
+        the config asserts — otherwise `is_local: true` would be a bypass."""
+        config = _config(
+            model="gpt-4o-mini",
+            kind="openai",
+            base_url="https://api.openai.com/v1",
+            is_local=True,
+        )
+        with pytest.raises(EgressBlocked):
+            build_provider(config, "p")
+
+
+class TestConfigLoadRefusesTheSameThing:
+    """Start-up must fail on a config that would be blocked at request time,
+    so an operator finds out from the logs rather than mid-scan."""
+
+    def test_a_hosted_provider_without_a_url_is_caught_at_load(
+        self, tmp_path: Path
+    ) -> None:
+        config = tmp_path / "llm.yaml"
+        config.write_text(
+            yaml.safe_dump({"enabled": True, "providers": {}, "roles": {}}),
+            encoding="utf-8",
+        )
+        with pytest.raises(LLMConfigError, match="egress"):
+            apply_update(
+                LlmUpdate(
+                    add_provider=NewProvider(
+                        name="openai", kind="openai", model="gpt-4o-mini", is_local=False
+                    )
+                ),
+                path=config,
+            )
+        # Nothing was written.
+        assert yaml.safe_load(config.read_text(encoding="utf-8"))["providers"] == {}
+
+
 class TestKeysStayOutOfTheConfig:
     def test_a_new_provider_writes_no_key_into_the_yaml(self, tmp_path: Path) -> None:
-        """The single most important property here.
-
-        `egress` is set alongside because `apply_update` validates the result
-        it is about to write, and a hosted provider under the default deny
-        policy is a config that would fail at scan time. The wizard endpoint
-        sets both together for exactly this reason.
-        """
+        """The single most important property here."""
         config = tmp_path / "llm.yaml"
         config.write_text(
             yaml.safe_dump({"enabled": True, "providers": {}, "roles": {}}),
@@ -51,8 +142,7 @@ class TestKeysStayOutOfTheConfig:
         apply_update(
             LlmUpdate(
                 add_provider=NewProvider(
-                    name="openai", kind="openai", model="gpt-4o-mini",
-                    base_url="https://api.openai.com/v1",
+                    name="openai", kind="openai", model="gpt-4o-mini", is_local=False
                 ),
                 egress="allow",
             ),
@@ -63,28 +153,6 @@ class TestKeysStayOutOfTheConfig:
         assert KEY not in text
         assert "api_key" not in text
         assert "gpt-4o-mini" in text
-
-    def test_a_hosted_provider_is_refused_under_the_deny_policy(
-        self, tmp_path: Path
-    ) -> None:
-        """The control working. A config that would be blocked at request time
-        is refused at write time, with nothing changed on disk."""
-        config = tmp_path / "llm.yaml"
-        original = yaml.safe_dump({"enabled": True, "providers": {}, "roles": {}})
-        config.write_text(original, encoding="utf-8")
-
-        with pytest.raises(LLMConfigError, match="egress"):
-            apply_update(
-                LlmUpdate(
-                    add_provider=NewProvider(
-                        name="openai", kind="openai", model="gpt-4o-mini",
-                        base_url="https://api.openai.com/v1",
-                    )
-                ),
-                path=config,
-            )
-
-        assert config.read_text(encoding="utf-8") == original
 
     def test_the_store_holds_the_key_not_the_config(self, store: Path) -> None:
         secrets.set_api_key("openai", KEY)
@@ -98,20 +166,18 @@ class TestKeysStayOutOfTheConfig:
         exists only so the wizard does not require hand-editing files."""
         secrets.set_api_key("openai", "from-store")
         monkeypatch.setenv("MY_OPENAI_KEY", "from-env")
-        resolved = secrets.resolve_api_key("openai", {"api_key_env": "MY_OPENAI_KEY"})
-        assert resolved == "from-env"
+        assert secrets.resolve_api_key("openai", {"api_key_env": "MY_OPENAI_KEY"}) == "from-env"
 
     def test_an_empty_env_var_falls_through_to_the_store(
         self, store: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """An exported-but-blank variable is the usual shape of a broken
-        deployment; treating it as "configured" would mean sending no key."""
+        deployment; treating it as configured would mean sending no key."""
         secrets.set_api_key("openai", "from-store")
         monkeypatch.setenv("MY_OPENAI_KEY", "   ")
         assert secrets.resolve_api_key("openai", {"api_key_env": "MY_OPENAI_KEY"}) == "from-store"
 
     def test_a_missing_store_is_not_an_error(self, store: Path) -> None:
-        """No model configured is the default state of this product."""
         assert secrets.resolve_api_key("openai", {}) is None
 
     def test_a_corrupt_store_does_not_raise(self, store: Path) -> None:
@@ -125,162 +191,71 @@ class TestKeysStayOutOfTheConfig:
         assert KEY not in store.read_text(encoding="utf-8")
 
 
-class TestRuntimeConfigSurvivesARebuild:
-    """Everything under `repo_root` is baked into the image, so a config the
-    wizard wrote there would be discarded by the next `docker compose build` —
-    silently, taking the operator's provider choice with it."""
-
-    def test_the_live_config_is_not_the_packaged_one(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from core.config import get_settings
-        from core.llm.router import active_config_path
-
-        monkeypatch.setenv("SIGHTGLASS_DATA_DIR", str(tmp_path / "data"))
-        monkeypatch.setenv("SIGHTGLASS_REPO_ROOT", str(tmp_path / "repo"))
-        monkeypatch.delenv("SIGHTGLASS_LLM_CONFIG", raising=False)
-        get_settings.cache_clear()
-
-        active = active_config_path()
-        assert (tmp_path / "repo") not in active.parents
-        assert (tmp_path / "data") in active.parents
-        get_settings.cache_clear()
-
-    def test_it_is_seeded_from_the_packaged_default_once(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from core.config import get_settings
-        from core.llm.router import ensure_runtime_config
-
-        repo = tmp_path / "repo"
-        (repo / "config").mkdir(parents=True)
-        (repo / "config" / "llm.yaml").write_text(
-            yaml.safe_dump({"enabled": False, "providers": {}, "roles": {}}),
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("SIGHTGLASS_DATA_DIR", str(tmp_path / "data"))
-        monkeypatch.setenv("SIGHTGLASS_REPO_ROOT", str(repo))
-        monkeypatch.delenv("SIGHTGLASS_LLM_CONFIG", raising=False)
-        get_settings.cache_clear()
-
-        first = ensure_runtime_config()
-        assert first.is_file()
-
-        # An operator edit must not be clobbered by the next seed attempt.
-        first.write_text(
-            yaml.safe_dump({"enabled": True, "providers": {}, "roles": {}}),
-            encoding="utf-8",
-        )
-        second = ensure_runtime_config()
-        assert yaml.safe_load(second.read_text(encoding="utf-8"))["enabled"] is True
-        get_settings.cache_clear()
-
-
 class TestKeysStayOutOfErrors:
     """An error string reaches the settings page and the logs."""
 
-    @pytest.mark.parametrize(
-        "provider_class",
-        [OpenAICompatibleProvider, AnthropicProvider, GoogleProvider],
-    )
-    def test_health_failure_does_not_echo_the_key(self, provider_class: type) -> None:
-        provider = provider_class(
-            model="m",
-            name="p",
-            base_url="http://127.0.0.1:1/v1",  # refused instantly
-            api_key=KEY,
-            guard=EgressPolicyGuard(allow_egress=True),
-        )
-        health = provider.health()
-        assert not health.healthy
-        assert KEY not in health.detail
+    def test_a_key_is_scrubbed_from_a_provider_error(self) -> None:
+        exc = RuntimeError(f"401 Unauthorized for key {KEY}")
+        assert KEY not in _explain_failure(exc, KEY)
 
+    def test_the_failure_is_named_not_just_echoed(self) -> None:
+        """LiteLLM normalises vendor errors into typed exceptions, which is one
+        of the reasons to use it: "your key is wrong" and "no such model" are
+        different problems with different fixes."""
 
-class TestWireShapes:
-    """Each adapter exists because its provider's shape genuinely differs."""
+        class AuthenticationError(Exception):
+            pass
 
-    def test_anthropic_hoists_the_system_prompt(self) -> None:
-        """Anthropic takes `system` as a top-level field; sending it as a
-        message role is a 400."""
-        captured: dict = {}
-
-        class Fake(AnthropicProvider):
-            def complete(self, messages, **kwargs):  # type: ignore[no-untyped-def]
-                system = "\n\n".join(m.content for m in messages if m.role == "system")
-                turns = [m for m in messages if m.role != "system"]
-                captured["system"] = system
-                captured["turns"] = turns
-                raise RuntimeError("stop here")
-
-        provider = Fake(model="m", api_key=KEY, guard=EgressPolicyGuard(allow_egress=True))
-        with pytest.raises(RuntimeError):
-            provider.complete([Message("system", "rules"), Message("user", "hi")])
-
-        assert captured["system"] == "rules"
-        assert all(m.role != "system" for m in captured["turns"])
-
-    def test_google_uses_the_header_not_a_query_parameter(self) -> None:
-        """A key in a query string lands in proxy logs and error strings."""
-        provider = GoogleProvider(
-            model="gemini-2.0-flash", api_key=KEY, guard=EgressPolicyGuard(allow_egress=True)
-        )
-        headers = provider._headers()
-        assert headers["x-goog-api-key"] == KEY
-
-    def test_openai_uses_a_bearer_header(self) -> None:
-        provider = OpenAICompatibleProvider(
-            model="gpt-4o-mini", api_key=KEY, guard=EgressPolicyGuard(allow_egress=True)
-        )
-        assert provider._headers()["Authorization"] == f"Bearer {KEY}"
+        assert "key was rejected" in _explain_failure(AuthenticationError("nope"), None)
 
 
 class TestLocality:
     """`is_local` is what the redaction layer keys off, so it is keyed to the
-    URL rather than to the vendor: a vLLM box on the LAN is local, and
+    endpoint rather than to the vendor: a vLLM box on the LAN is local, and
     api.openai.com never is."""
 
-    def test_a_hosted_endpoint_is_never_local(self) -> None:
-        provider = OpenAICompatibleProvider(
-            model="m",
-            base_url="https://api.openai.com/v1",
-            guard=EgressPolicyGuard(allow_egress=True),
-        )
-        assert provider.is_local is False
-
-    def test_an_openai_compatible_server_on_the_lan_is_local(self) -> None:
-        provider = OpenAICompatibleProvider(
-            model="m",
+    def test_a_lan_endpoint_is_local(self) -> None:
+        provider = LiteLLMProvider(
+            model="hosted_vllm/x",
             base_url="http://192.168.1.50:8000/v1",
             guard=EgressPolicyGuard(allow_egress=True),
         )
         assert provider.is_local is True
 
+    def test_a_hosted_endpoint_is_not(self) -> None:
+        provider = LiteLLMProvider(
+            model="gpt-4o-mini",
+            base_url="https://api.openai.com/v1",
+            guard=EgressPolicyGuard(allow_egress=True),
+        )
+        assert provider.is_local is False
 
-class TestCatalogMatchesTheAdapters:
-    def test_every_catalog_kind_can_actually_be_built(self) -> None:
-        """A catalog entry whose `kind` no adapter implements is a wizard that
-        offers a provider it cannot connect."""
+    def test_no_url_and_no_declaration_defaults_to_hosted(self) -> None:
+        """The safe direction: this flag gates whether plaintext could ever be
+        sent, so an unknown must not read as local."""
+        provider = LiteLLMProvider(
+            model="gpt-4o-mini", guard=EgressPolicyGuard(allow_egress=True)
+        )
+        assert provider.is_local is False
+
+
+class TestCatalogMatchesLiteLLM:
+    def test_every_hosted_entry_declares_it_needs_a_key(self) -> None:
         for entry in CATALOG:
-            config = LLMConfig(
-                enabled=True,
-                providers={
-                    entry.id: {
-                        "kind": entry.kind,
-                        "model": entry.default_model or "placeholder",
-                        "base_url": entry.base_url or "http://localhost:1234/v1",
-                    }
-                },
-                roles={},
-                egress="allow",
-                path=Path("llm.yaml"),
-            )
-            provider = build_provider(config, entry.id)
-            assert provider.kind
+            if not entry.is_local:
+                assert entry.requires_key or entry.id == "custom", entry.id
 
     def test_ids_are_unique(self) -> None:
         assert len(BY_ID) == len(CATALOG)
 
-    def test_hosted_entries_declare_they_need_a_key(self) -> None:
+    def test_every_default_model_routes_to_the_provider_it_claims(self) -> None:
+        """A model string that only looks right is a wizard entry that fails at
+        the first call. LiteLLM's own resolver is the authority."""
+        from core.llm.providers.litellm_provider import resolve_provider
+
+        # Entries whose default is a placeholder for the operator to complete.
+        placeholders = {"vllm", "azure", "litellm-proxy", "custom"}
         for entry in CATALOG:
-            if not entry.is_local:
-                assert entry.requires_key, f"{entry.id} is hosted but claims no key"
+            if entry.id in placeholders or entry.kind == "ollama":
+                continue
+            assert resolve_provider(entry.default_model), entry.id

@@ -57,13 +57,21 @@ providers:
     # them room: a budget sized for the answer alone returns an empty response.
     num_ctx: 16384
 
-  # Cloud providers land in M3. Left here as documentation of the shape; note
-  # that with `egress: deny` below, enabling one fails at config load rather
-  # than mid-scan.
+  # Cloud providers go through LiteLLM: the `model` string carries the
+  # provider prefix it routes on, and no per-vendor adapter is involved. Add
+  # one from the dashboard's Settings page, which stores the key outside this
+  # file, or by hand as below.
+  #
+  # `is_local: false` is what the egress policy keys off. Most LiteLLM
+  # providers carry no base_url — LiteLLM resolves the endpoint itself — so
+  # locality cannot be re-derived from a URL, and an undeclared provider is
+  # treated as hosted. With `egress: deny` below, enabling one fails at config
+  # load rather than mid-scan.
   #
   # frontier:
   #   kind: anthropic
-  #   model: claude-sonnet-4-5
+  #   model: anthropic/claude-sonnet-4-5-20250929
+  #   is_local: false
   #   api_key_env: ANTHROPIC_API_KEY
 
 policy:

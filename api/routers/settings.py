@@ -151,6 +151,7 @@ class CatalogEntryOut(BaseModel):
     key_hint: str
     key_url: str
     suggested_models: list[str]
+    needs_base_url: bool
 
 
 @router.get("/llm/catalog", response_model=list[CatalogEntryOut])
@@ -176,6 +177,7 @@ def llm_catalog() -> list[CatalogEntryOut]:
             key_hint=entry.key_hint,
             key_url=entry.key_url,
             suggested_models=list(entry.suggested_models),
+            needs_base_url=entry.needs_base_url,
         )
         for entry in CATALOG
     ]
@@ -233,7 +235,10 @@ def connect_provider(request: ConnectProviderRequest) -> ConnectProviderResponse
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY, f"{entry.label} requires an API key"
         )
-    if not base_url:
+    # Most providers need no base URL — LiteLLM knows where they live, and the
+    # model prefix is what routes. Only the self-hosted and bring-your-own
+    # endpoints genuinely require one.
+    if entry.needs_base_url and not base_url:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             f"{entry.label} needs a base URL; there is no default for it",
@@ -249,7 +254,16 @@ def connect_provider(request: ConnectProviderRequest) -> ConnectProviderResponse
         had_key_before = has_api_key(name, {})
         set_api_key(name, request.api_key.strip())
 
-    spec = {"kind": entry.kind, "model": model, "base_url": base_url}
+    # `is_local` is recorded so the egress decision does not depend on being
+    # able to parse a URL: most LiteLLM providers have none in the config, and
+    # a hosted provider with no URL must still be refused under a deny policy.
+    spec: dict[str, object] = {
+        "kind": entry.kind,
+        "model": model,
+        "is_local": entry.is_local,
+    }
+    if base_url:
+        spec["base_url"] = base_url
     probe_config = load_config()
     probe_config.providers[name] = spec
     if not entry.is_local:
@@ -284,7 +298,11 @@ def connect_provider(request: ConnectProviderRequest) -> ConnectProviderResponse
             LlmUpdate(
                 enabled=True,
                 add_provider=NewProvider(
-                    name=name, kind=entry.kind, model=model, base_url=base_url
+                    name=name,
+                    kind=entry.kind,
+                    model=model,
+                    base_url=base_url,
+                    is_local=entry.is_local,
                 ),
                 roles={role: name for role in roles},
                 egress=None if entry.is_local else "allow",

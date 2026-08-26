@@ -28,6 +28,7 @@ dependencies = [
     # with a TypeError while the commands themselves run fine.
     "click==8.1.8",
     "pyyaml==6.0.2",
+    "litellm==1.61.20",
 ]
 
 [project.optional-dependencies]
