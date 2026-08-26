@@ -134,8 +134,9 @@ export interface Finding {
   locations: FindingLocation[];
   location_count: number;
   llm: LlmAssessment | null;
-  /** Non-null only when the run opted into plaintext retention. */
-  value_plaintext: string | null;
+  /** Empty unless the run opted into plaintext retention. A clustered finding
+   *  covers many distinct values, so this is a list rather than one string. */
+  value_plaintexts: string[];
   /** From the `explain` role; null until someone asks for it. */
   llm_explanation: string | null;
   llm_explained_by: string | null;

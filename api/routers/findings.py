@@ -153,6 +153,54 @@ def _previous_finding_ids(session: Session, run_id: str) -> set[str]:
     )
 
 
+# A clustered finding can cover hundreds of distinct values. This bounds what
+# one response carries; the locations list still reports the true total.
+MAX_PLAINTEXT_VALUES = 500
+
+
+def _plaintexts(
+    session: Session, finding: Finding, locations: list[FindingLocation]
+) -> list[str]:
+    """The real values behind this finding, when the run retained them.
+
+    Matched through the finding's *locations*, not its ``value_hash``. A
+    clustered finding — "40 values, e.g. …" — carries a synthetic hash derived
+    from its members' hashes, which by construction equals no evidence row's
+    hash, so a hash join silently returned nothing for exactly the findings
+    with the most values to show. Locations are the real link: the correlator
+    keeps every member's ``(artifact_id, offset)`` when it builds a cluster.
+    """
+    if not locations:
+        return []
+
+    keys = {(location.artifact_id, location.offset) for location in locations}
+    rows = session.scalars(
+        select(Evidence).where(
+            Evidence.run_id == finding.run_id,
+            Evidence.artifact_id.in_({artifact_id for artifact_id, _ in keys}),
+            Evidence.value_plaintext.is_not(None),
+        )
+    ).all()
+
+    # The artifact filter is as far as this goes in SQL — a composite IN over
+    # (artifact_id, offset) is not portable to SQLite, which the unit suite
+    # runs on. The exact pairing happens here.
+    seen: set[str] = set()
+    values: list[str] = []
+    for row in rows:
+        if (row.artifact_id, row.offset) not in keys:
+            continue
+        value = row.value_plaintext
+        if value is None or value in seen:
+            continue
+        seen.add(value)
+        values.append(value)
+        if len(values) >= MAX_PLAINTEXT_VALUES:
+            break
+
+    return sorted(values)
+
+
 def _to_out(session: Session, finding: Finding, previous_ids: set[str]) -> FindingOut:
     locations = list(
         session.scalars(
@@ -173,18 +221,7 @@ def _to_out(session: Session, finding: Finding, previous_ids: set[str]) -> Findi
             assessed_at=finding.llm_at,
         )
 
-    # Every evidence row in this finding's group was matched under the same
-    # rule with the same value_hash (`correlator.py`), so any one of them that
-    # retained plaintext carries the same value the finding itself masks.
-    value_plaintext = session.scalars(
-        select(Evidence.value_plaintext)
-        .where(
-            Evidence.run_id == finding.run_id,
-            Evidence.value_hash == finding.value_hash,
-            Evidence.value_plaintext.is_not(None),
-        )
-        .limit(1)
-    ).first()
+    value_plaintexts = _plaintexts(session, finding, locations)
 
     return FindingOut(
         id=finding.id,
@@ -206,7 +243,7 @@ def _to_out(session: Session, finding: Finding, previous_ids: set[str]) -> Findi
         locations=[LocationOut.model_validate(location) for location in locations],
         location_count=len(locations),
         llm=assessment,
-        value_plaintext=value_plaintext,
+        value_plaintexts=value_plaintexts,
         llm_explanation=finding.llm_explanation,
         llm_explained_by=finding.llm_explained_by,
         llm_explained_at=finding.llm_explained_at,

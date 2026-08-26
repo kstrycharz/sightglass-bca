@@ -552,51 +552,68 @@ function Explanation({ finding }: { finding: Finding }) {
 /**
  * The finding's value, masked by default.
  *
- * Reveal is click-to-show and resets on collapse, because the common way to
- * leak a secret from a tool like this is to have it already on screen when
- * someone shares it. Deliberately not gated behind the deterministic-view
- * toggle: the plaintext comes from the rule match, not from a model.
+ * Reveal is click-to-show, because the common way to leak a secret from a tool
+ * like this is to have it already on screen when someone shares it.
+ * Deliberately not gated behind the deterministic-view toggle: the plaintext
+ * comes from the rule match, not from a model.
  *
- * `value_plaintext` is null unless the run opted into retention, which is why
- * the masked branch says how to get it rather than just showing dots.
+ * A list rather than one value, because a clustered finding covers many —
+ * "40 values, e.g. …" is one finding over 40 distinct paths, and showing only
+ * the first would be the least useful one to pick.
  */
 function SecretValue({ finding }: { finding: Finding }) {
   const [revealed, setRevealed] = useState(false);
   const [copied, setCopied] = useState(false);
-  const plaintext = finding.value_plaintext;
+  const values = finding.value_plaintexts ?? [];
+  const has = values.length > 0;
 
   async function copy() {
-    if (!plaintext) return;
-    await navigator.clipboard.writeText(plaintext);
+    if (!has) return;
+    await navigator.clipboard.writeText(values.join("\n"));
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   }
 
+  const showing = revealed && has;
+
   return (
     <div>
-      <Label>Value{plaintext && revealed ? " — plaintext" : " — masked"}</Label>
-      <div className="mt-1 flex flex-wrap items-center gap-2">
-        <code
-          className={`scroll-x max-w-full flex-1 rounded border px-2 py-1 font-mono text-xs ${
-            revealed && plaintext
-              ? "border-critical/40 bg-critical-bg text-critical"
-              : "border-border bg-surface text-content-muted"
-          }`}
-        >
-          {revealed && plaintext ? plaintext : finding.value_masked}
-        </code>
-        {plaintext && (
+      <Label>
+        Value{showing ? " — plaintext" : " — masked"}
+        {has && values.length > 1 && ` (${values.length})`}
+      </Label>
+
+      <div className="mt-1 flex flex-wrap items-start gap-2">
+        {showing ? (
+          <div className="scroll-x max-h-64 min-w-0 flex-1 overflow-y-auto rounded border border-critical/40 bg-critical-bg px-2 py-1">
+            {values.map((value, index) => (
+              <div key={index} className="whitespace-nowrap font-mono text-xs text-critical">
+                {value}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <code className="scroll-x min-w-0 flex-1 rounded border border-border bg-surface px-2 py-1 font-mono text-xs text-content-muted">
+            {finding.value_masked}
+          </code>
+        )}
+        {has && (
           <>
             <Button onClick={() => setRevealed((on) => !on)}>
               {revealed ? "Hide" : "Reveal"}
             </Button>
-            {revealed && <Button onClick={copy}>{copied ? "Copied" : "Copy"}</Button>}
+            {revealed && (
+              <Button onClick={copy}>
+                {copied ? "Copied" : values.length > 1 ? "Copy all" : "Copy"}
+              </Button>
+            )}
           </>
         )}
       </div>
+
       <p className="mt-1 text-xs text-content-subtle">
-        {plaintext
-          ? "This run retained plaintext, so the real value is stored in the database and shown here on request."
+        {has
+          ? "This run retained plaintext, so the real values are stored in the database and shown here on request."
           : "Only a masked value and a hash were stored. To see the real value, re-scan this artifact with “Retain full plaintext values” selected."}
       </p>
     </div>

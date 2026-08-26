@@ -171,13 +171,15 @@ class FindingOut(BaseModel):
     locations: list[LocationOut] = Field(default_factory=list)
     location_count: int = 0
 
-    # Null unless the run that produced this finding opted into plaintext
-    # retention (`retain_plaintext`) *and* the finding's own evidence has a
-    # surviving unmasked value. Every route in this router already requires
-    # ADMIN scope (ADR-0019) — this is not an additional exposure surface, it
-    # is the retrieval path for a value that was already sitting in the
-    # database with no other way to read it back.
-    value_plaintext: str | None = None
+    # Empty unless the run opted into plaintext retention (`retain_plaintext`).
+    # A list, not a single value, because a clustered finding legitimately
+    # covers many — "40 values, e.g. …" is one finding over 40 distinct paths,
+    # and showing only the first would be the least useful one to pick.
+    #
+    # Every route in this router already requires ADMIN scope (ADR-0019), so
+    # this is not a new exposure surface: it is the retrieval path for values
+    # that were already in the database with no other way to read them back.
+    value_plaintexts: list[str] = Field(default_factory=list)
 
     # Advisory. Null when triage has not run, and hidden entirely by the
     # dashboard's deterministic-view toggle.
