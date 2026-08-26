@@ -181,7 +181,8 @@ Full detail in [ARCHITECTURE.md](ARCHITECTURE.md) and
 
 | Document | What it covers |
 | --- | --- |
-| [CLAUDE.md](CLAUDE.md) | Current status, progress, next steps |
+| [CLAUDE.md](CLAUDE.md) | Current status, known issues, conventions |
+| [docs/JOURNAL.md](docs/JOURNAL.md) | What was built each session, what broke, and why |
 | [docs/ADR.md](docs/ADR.md) | Architecture decision log, with rejected alternatives |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Components, pipeline stages, data model |
 | [docs/CICD.md](docs/CICD.md) | Running Sightglass as a CI/CD release gate |
