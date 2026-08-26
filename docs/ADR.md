@@ -307,3 +307,112 @@ exactly what an air-gapped deployment does not have); a token-minting endpoint
 (a privilege-escalation target, and the first token cannot require a token).
 
 ---
+
+### ADR-0024 — Schema changes ship as migrations; start-up refuses a stale schema (2026-08-25)
+Alembic migrates on start-up, on the application's own connection.
+`create_all()` is demoted to tests only, and a failed migration aborts the boot.
+
+**The failure that forced it.** A column was added to `RunManifest`, the stack
+was rebuilt, and `create_all()` reported success — it creates missing *tables*
+and is structurally blind to a missing *column*. The API then returned 500 on
+every run read, and a 213 MB scan died at the manifest write with the artifact
+already uploaded, unpacked and scanned. Nothing in the test suite could have
+caught it: every test builds its schema from the current models, so the models
+and the schema agree by construction. Only a *pre-existing* database disagrees,
+and until now nothing ever ran against one.
+
+**Three states, one entry point.** `upgrade_schema()` handles an empty database
+(every revision runs), a database created by the old bootstrap (no version
+table but real data — stamped at `0001_baseline`, then upgraded), and one
+already at head (a no-op). The baseline therefore describes the schema as it
+stood *before* Alembic existed, which is why the `components` column is a
+separate revision rather than part of it: a baseline containing it could not be
+stamped onto the deployments that lack it.
+
+**The migration borrows the application's connection** via
+`config.attributes["connection"]` rather than building its own engine from
+settings. It guarantees the schema being migrated is the schema the process is
+about to query; two independently-resolved URLs can diverge, and the symptom of
+migrating the wrong database is silence. The command-line path keeps the
+engine-building fallback, because there no application exists to borrow from.
+
+**A failed migration is fatal.** The previous bootstrap logged a warning and
+served anyway, which is how a missing column became a 500 on an ordinary
+request instead of a refusal to start. A process that cannot reach the schema
+its code requires has nothing useful to do.
+
+**Portability is enforced, not hoped for.** Autogenerate froze
+`server_default` as the Postgres literal `now()`, which is a syntax error in
+SQLite; it is written as `sa.func.now()` so each dialect renders its own. The
+unit suite migrates SQLite for this reason — it needs no Docker and it is the
+only cheap check that a revision is not silently Postgres-only.
+
+**Rejected:** keeping `create_all()` and hand-writing `ALTER`s (what was
+already happening, informally, and it is how the live database ended up in a
+state no fresh deployment would reproduce); migrating from an entrypoint script
+rather than in-process (a second place the database URL is resolved, and it
+skips the adoption logic); a migration container as a compose dependency
+(correct for Kubernetes, more moving parts than a self-hosted stack needs).
+
+---
+
+### ADR-0025 — A run is claimed with a conditional UPDATE, committed immediately (2026-08-25)
+The `queued` → `running` transition is `UPDATE runs SET status='running' WHERE
+id=? AND status='queued'`, committed before the scan begins rather than flushed
+into the scan's transaction.
+
+**Observed, not theorised.** The whole scan runs inside one transaction, so a
+flushed transition is invisible to every other connection until the scan ends.
+For a 213 MB installer that is eight minutes during which the run reads as
+`queued` — and the orphan sweep requeues a `queued` run after five. It
+dispatched a second `scan_run` for a run whose original task was still inside
+the static analyzer: two sets of analyzer containers on the same artifact,
+racing to write the same rows. The recovery feature caused precisely the harm
+it exists to prevent.
+
+**Two defects, two fixes, both needed.** Committing the transition stops the run
+*looking* abandoned. The conditional UPDATE stops a duplicate delivery from
+being acted on at all — Celery is at-least-once by design, so re-delivery can
+happen for reasons that have nothing to do with the sweep, and a read-then-write
+claim has a window between the read and the write that two workers can both
+pass through.
+
+**A lost claim is not an error.** `scan_run` returns `{"skipped": true}` rather
+than failing the task: the worker holding the claim is doing the work, and
+failing the duplicate would make a healthy run look broken in the task log.
+Nor can a finished run be re-claimed, so a late re-delivery cannot restart a
+scan and overwrite completed results.
+
+**Rejected:** a Redis lock (a second system to be correct about, and the
+database already has the state); `SELECT ... FOR UPDATE` (holds a row lock for
+the whole scan, so an eight-minute transaction blocks the status write); making
+the sweep's grace period longer than the longest scan (there is no such number
+— it is a function of the artifact).
+
+---
+
+### ADR-0026 — Response models are constructed, not validated from ORM objects (2026-08-25)
+Tree-shaped API responses build their nodes field by field. `model_validate` on
+a SQLAlchemy object is not used where the schema and the mapper share a field
+name that is a relationship.
+
+**The cost was measured.** `ArtifactOut.children` and `Artifact.children` share
+a name, so `ArtifactOut.model_validate(artifact)` made Pydantic read the ORM
+relationship — lazy-loading that node's entire subtree from the database,
+recursively, for every node, and discarding all of it on the next line where
+`build()` assigned the real children. 500 nodes took 58 seconds. Constructed
+explicitly, the same 500 take under 0.1s. `sightglass scan` polls that endpoint
+every 20 seconds for the duration of a scan.
+
+**Why not `lazy="raise"` on the relationship instead.** It would have turned
+this into an exception rather than a slow success, which is better — but it
+also forbids the legitimate uses elsewhere in the pipeline, and it makes the
+mapper carry a constraint that exists for the benefit of one serialiser.
+Constructing the response explicitly puts the decision where the cost is.
+
+**The related cap.** The tree is limited to 500 nodes, ordered by depth so what
+survives is the top of the tree and always connected. A recursive installer
+unpacks to 68 976 artifacts; no browser renders that, and the exact count stays
+in the summary alongside a flag saying the tree was cut.
+
+---

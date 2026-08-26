@@ -26,6 +26,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from api.deps import get_caller
+from core.composition import Component, ComponentInventory, Confidence, Ecosystem
 from core.config import SIGHTGLASS_VERSION
 from core.db import get_session
 from core.models import Artifact, Finding, FindingLocation, Run, RunManifest, RunStage
@@ -39,6 +40,7 @@ from core.policy import (
     verdict_to_dict,
 )
 from core.vocab import Severity
+from reporting.cyclonedx import build_sbom
 from reporting.pdf import ReportData, ReportFinding, render_report
 from reporting.sarif import SarifFinding, build_sarif
 
@@ -323,4 +325,62 @@ def get_pdf_report(
         content=document,
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/{run_id}/sbom")
+def get_sbom(
+    run_id: str,
+    session: Annotated[Session, Depends(get_session)],
+) -> dict[str, Any]:
+    """CycloneDX 1.5 bill of materials for this run.
+
+    Rebuilt from the stored inventory rather than re-scanning, so the document
+    for a given run never changes and can be attached to a release.
+    """
+    run = session.get(Run, run_id)
+    if run is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"run {run_id} not found")
+
+    manifest = session.scalars(
+        select(RunManifest).where(RunManifest.run_id == run_id).limit(1)
+    ).first()
+    stored = (manifest.components if manifest else {}) or {}
+
+    components: list[Component] = []
+    for entry in stored.get("components", []):
+        try:
+            components.append(
+                Component(
+                    name=str(entry["name"]),
+                    version=str(entry.get("version", "")),
+                    ecosystem=Ecosystem(entry.get("ecosystem", "generic")),
+                    confidence=Confidence(entry.get("confidence", "declared")),
+                    path_in_tree=str(entry.get("path_in_tree", "")),
+                    licence=str(entry.get("licence", "")),
+                    evidence=str(entry.get("evidence", "")),
+                )
+            )
+        except (KeyError, ValueError):
+            # A row written by an older detector than this one. Skipping it
+            # beats refusing to produce an SBOM at all.
+            continue
+
+    inventory = ComponentInventory(
+        components=tuple(components),
+        files_examined=int(stored.get("files_examined", 0)),
+        truncated=bool(stored.get("truncated", False)),
+    )
+
+    root = session.scalars(
+        select(Artifact).where(Artifact.run_id == run_id, Artifact.parent_id.is_(None)).limit(1)
+    ).first()
+
+    return build_sbom(
+        inventory,
+        run_id=run_id,
+        artifact_name=root.name if root else run_id,
+        artifact_sha256=root.sha256 if root else "",
+        artifact_size_bytes=root.size_bytes if root else 0,
+        tool_version=SIGHTGLASS_VERSION,
     )

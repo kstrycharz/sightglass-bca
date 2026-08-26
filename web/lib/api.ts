@@ -76,6 +76,7 @@ export interface RunDetail extends RunSummary {
   stages: Stage[];
   manifest: Manifest | null;
   artifact_tree: ArtifactNode | null;
+  artifact_tree_truncated: boolean;
   previous_run_id: string | null;
 }
 

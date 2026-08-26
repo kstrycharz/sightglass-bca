@@ -9,10 +9,13 @@ from, so a field lost in transit is a build that passes when it should fail.
 
 from __future__ import annotations
 
+import urllib.request
 from datetime import date
 from pathlib import Path
 
-from cli.client import _MultipartBody
+import pytest
+
+from cli.client import ApiError, SightglassClient, _MultipartBody
 from cli.gate_output import render_json, render_markdown, render_text
 from core.policy import (
     GateDecision,
@@ -249,3 +252,59 @@ def test_rendering_never_emits_a_raw_secret() -> None:
     )
     for rendered in (render_text(verdict), render_markdown(verdict), render_json(verdict)):
         assert "AKIAIOSFODNN7EXAMPLE" not in rendered
+
+
+# -- transport failures -----------------------------------------------------
+#
+# A build agent gets a sentence and an exit code. Anything that reaches it as a
+# Python traceback is a bug in this client, not information: it buries the one
+# actionable line in forty of stack, and the operator cannot tell a broken
+# Sightglass from a broken pipeline. Observed against a real 213 MB scan — a
+# read that stalled after the response headers arrived raised a bare
+# TimeoutError, which is not a URLError and so matched no handler at all.
+
+
+def _client_raising(
+    monkeypatch: pytest.MonkeyPatch, exc: BaseException
+) -> SightglassClient:
+    """Fail at the socket, where these errors actually originate."""
+
+    def _boom(*args: object, **kwargs: object) -> None:
+        raise exc
+
+    monkeypatch.setattr(urllib.request, "urlopen", _boom)
+    return SightglassClient("http://example.invalid", token="t", timeout_s=30)
+
+
+def test_a_read_timeout_becomes_an_actionable_error_not_a_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _client_raising(monkeypatch, TimeoutError())
+    with pytest.raises(ApiError) as caught:
+        client.get_run("run-1")
+    message = str(caught.value)
+    assert "timed out" in message
+    # Naming the remedy matters: the default is frequently just too short for a
+    # large installer, and "timed out" alone reads as "the server is broken".
+    assert "--timeout" in message
+
+
+def test_an_unexpected_socket_error_is_still_an_api_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Anything from the socket layer, not only the cases we predicted."""
+    client = _client_raising(monkeypatch, ConnectionResetError("connection reset by peer"))
+    with pytest.raises(ApiError) as caught:
+        client.get_run("run-1")
+    assert "connection reset" in str(caught.value)
+
+
+def test_the_pdf_download_is_guarded_the_same_way(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """It has its own urlopen call, so it needs its own handlers — the kind of
+    divergence that only shows up on the slow path in production."""
+    client = _client_raising(monkeypatch, TimeoutError())
+    with pytest.raises(ApiError) as caught:
+        client.get_pdf("run-1")
+    assert "timed out" in str(caught.value)

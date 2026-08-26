@@ -21,6 +21,7 @@ RUN groupadd --gid 10001 analyzer \
 COPY --chown=root:root core/__init__.py /opt/sightglass/core/__init__.py
 COPY --chown=root:root core/vocab.py    /opt/sightglass/core/vocab.py
 COPY --chown=root:root core/rules/      /opt/sightglass/core/rules/
+COPY --chown=root:root core/composition/ /opt/sightglass/core/composition/
 COPY --chown=root:root sandbox/images/static/analyzer.py /opt/sightglass/analyzer.py
 RUN chmod -R a-w /opt/sightglass
 

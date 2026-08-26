@@ -38,15 +38,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         air_gapped=app_settings.air_gapped,
     )
 
-    # First-boot convenience so `make dev` works from a clean clone. It is
-    # idempotent and never drops or alters anything; real deployments run
-    # `alembic upgrade head` so schema changes stay reviewable.
-    from core.db import create_all
+    # Migrate on start-up so `make dev` works from a clean clone and an
+    # upgraded deployment cannot serve against a schema older than its code.
+    # A failure here is fatal on purpose: the previous behaviour logged a
+    # warning and carried on, which meant a missing column surfaced later as a
+    # 500 on an ordinary request rather than as a refusal to start.
+    from core.db import upgrade_schema
 
-    try:
-        create_all()
-    except Exception as exc:
-        log.warning("api.schema_bootstrap_failed", error=str(exc))
+    upgrade_schema()
+    log.info("api.schema_current")
 
     _announce_auth(app_settings.auth_required)
 

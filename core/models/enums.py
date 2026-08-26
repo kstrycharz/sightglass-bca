@@ -18,12 +18,34 @@ class RunStatus(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
     COMPLETED = "completed"
+
+    DEGRADED = "degraded"
+    """The scan finished, but an analyzer did not.
+
+    Distinct from both `completed` and `failed` because it is neither: findings
+    were produced and are real, and the absence of others proves nothing. The
+    gate already refuses to pass a run in this state (ADR-0018); this exists so
+    that the API and the dashboard say so too. Observed in the field: a static
+    analyzer that failed to import a module exited non-zero in under a second,
+    and the run reported `completed` with zero findings — a clean bill of
+    health for a 213 MB installer nobody had looked inside."""
+
     FAILED = "failed"
     CANCELLED = "cancelled"
 
     @property
     def is_terminal(self) -> bool:
-        return self in (RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED)
+        return self in (
+            RunStatus.COMPLETED,
+            RunStatus.DEGRADED,
+            RunStatus.FAILED,
+            RunStatus.CANCELLED,
+        )
+
+    @property
+    def produced_results(self) -> bool:
+        """The run got far enough to have written findings worth reading."""
+        return self in (RunStatus.COMPLETED, RunStatus.DEGRADED)
 
 
 class StageStatus(StrEnum):

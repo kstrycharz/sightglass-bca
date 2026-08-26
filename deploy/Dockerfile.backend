@@ -34,6 +34,10 @@ COPY config/ ./config/
 COPY scripts/ ./scripts/
 COPY sandbox/ ./sandbox/
 COPY tests/ ./tests/
+# The migration scripts ship with the image: a container that cannot
+# migrate the database it is pointed at cannot start.
+COPY alembic.ini ./
+COPY alembic/ ./alembic/
 
 # The worker talks to the Docker socket, which is root-equivalent on the host
 # (see THREAT_MODEL.md). It is the one component that must, and it is why

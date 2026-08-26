@@ -27,6 +27,7 @@ from typing import Any
 
 sys.path.insert(0, "/opt/sightglass")
 
+from core.composition import inventory as build_inventory
 from core.rules import RulePack, load_rule_pack, scan_file, sweep
 from core.rules.recon import summarise as summarise_recon
 from core.rules.scanner import MIN_STRING_LENGTH, extract_strings
@@ -394,6 +395,15 @@ def main(argv: list[str] | None = None) -> int:
         help="truncate artifacts larger than this; recorded in the result",
     )
     parser.add_argument(
+        "--components",
+        action="store_true",
+        help=(
+            "identify third-party components from the manifests the artifact "
+            "ships — package.json, .nuspec, dist-info, Go build info. This is "
+            "what an SBOM is built from."
+        ),
+    )
+    parser.add_argument(
         "--recon",
         action="store_true",
         help=(
@@ -454,10 +464,23 @@ def main(argv: list[str] | None = None) -> int:
 
     inventory = run_recon(artifacts, workers=workers) if args.recon else None
 
+    components = None
+    if args.components:
+        started_components = time.monotonic()
+        components = build_inventory(
+            [(path, path.relative_to(INPUT_DIR).as_posix()) for path in artifacts]
+        )
+        print(
+            f"identified {len(components.components)} component(s) in "
+            f"{time.monotonic() - started_components:.1f}s",
+            flush=True,
+        )
+
     result: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "analyzer": "static",
         "recon": inventory.to_dict() if inventory is not None else None,
+        "components": components.to_dict() if components is not None else None,
         "residue": collect_residue(artifacts, pack, args.emit_residue) if args.emit_residue else [],
         "rule_pack": {"version": pack.version, "hash": pack.hash},
         "tool_versions": {

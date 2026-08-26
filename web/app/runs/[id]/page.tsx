@@ -210,7 +210,11 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
           {run.artifact_tree && (
             <Panel
               title="Artifact tree"
-              description="Recursively unpacked. Badges show findings per file."
+              description={
+                run.artifact_tree_truncated
+                  ? `Recursively unpacked. Showing the first levels of ${run.artifact_count.toLocaleString()} artifacts — every one was scanned.`
+                  : "Recursively unpacked. Badges show findings per file."
+              }
             >
               <ArtifactTree root={run.artifact_tree} />
             </Panel>

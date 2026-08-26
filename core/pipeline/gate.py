@@ -28,8 +28,10 @@ import structlog
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from core.models import Finding, FindingLocation, Run, RunStage
-from core.models.enums import RunStatus, StageStatus
+from core.models import Finding, FindingLocation, Run
+from core.models.enums import RunStatus
+from core.pipeline.stages import degraded_stages as stage_degradation
+from core.pipeline.stages import describe_degraded
 from core.policy import GateFinding, GateVerdict, Policy, Waiver, evaluate
 from core.vocab import Severity
 
@@ -157,18 +159,14 @@ def _artifact_paths(session: Session, run_id: str, finding_ids: list[str]) -> di
 
 
 def degraded_stages(session: Session, run_id: str) -> list[str]:
-    """Analyzers that timed out, OOMed, or failed.
+    """Analyzers that timed out, OOMed, or failed, described for a human.
 
     Their absence from the findings list is not evidence of a clean artifact,
-    which is exactly what the gate's INCONCLUSIVE verdict exists to say.
+    which is exactly what the gate's INCONCLUSIVE verdict exists to say. The
+    set itself comes from `core.pipeline.stages` so that the gate and the run's
+    own status can never disagree about what degraded means.
     """
-    stages = session.scalars(select(RunStage).where(RunStage.run_id == run_id)).all()
-    degraded = sorted(
-        f"{stage.analyzer} ({stage.status})"
-        for stage in stages
-        if StageStatus(stage.status).is_degraded
-    )
-    return degraded
+    return describe_degraded(stage_degradation(session, run_id))
 
 
 def gate_run(

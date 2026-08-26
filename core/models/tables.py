@@ -126,6 +126,14 @@ class RunManifest(Base, TimestampMixin):
     swept independently of the rule pack. Not findings — see core/rules/recon.py
     for why the two are deliberately separate."""
 
+    components: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    """The bill of materials: what this artifact is made of.
+
+    On the manifest rather than its own table because it is a *property of the
+    run* in exactly the way the rule-pack hash is — re-scanning with a newer
+    detector should produce a new inventory beside a new set of findings, not
+    mutate a shared one."""
+
     residue: Mapped[list[Any]] = mapped_column(JSON, default=list)
     """Strings no rule matched, sampled during the scan. Input to the AI
     rule-author loop (core/llm/discovery.py). Deliberately stored with the

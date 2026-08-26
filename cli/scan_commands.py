@@ -161,6 +161,9 @@ def scan(
     pdf: Annotated[
         Path | None, typer.Option(help="Write the PDF release record here.")
     ] = None,
+    sbom: Annotated[
+        Path | None, typer.Option(help="Write a CycloneDX SBOM here.")
+    ] = None,
     json_out: Annotated[
         Path | None, typer.Option("--json", help="Write the verdict as JSON.")
     ] = None,
@@ -272,6 +275,7 @@ def scan(
         markdown_out=markdown_out,
         sarif=sarif,
         pdf=pdf,
+        sbom=sbom,
         warn_only=warn_only,
     )
 
@@ -288,6 +292,7 @@ def _emit_verdict(
     markdown_out: Path | None,
     sarif: Path | None,
     pdf: Path | None,
+    sbom: Path | None,
     warn_only: bool,
 ) -> NoReturn:
     """Render a verdict, write the requested artefacts, and exit.
@@ -323,6 +328,18 @@ def _emit_verdict(
         sarif.parent.mkdir(parents=True, exist_ok=True)
         sarif.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         typer.echo(f"wrote {sarif}")
+
+    if sbom is not None:
+        try:
+            document = client.get_sbom(run_id)
+        except ApiError as exc:
+            _fail(f"could not fetch the SBOM: {exc}")
+        sbom.parent.mkdir(parents=True, exist_ok=True)
+        sbom.write_text(
+            json.dumps(document, indent=2, sort_keys=True) + chr(10), encoding="utf-8"
+        )
+        count = len(document.get("components", []))
+        typer.echo(f"wrote {sbom} ({count} component(s))")
 
     if pdf is not None:
         try:
@@ -365,6 +382,9 @@ def gate(
     sarif: Annotated[Path | None, typer.Option(help="Write SARIF here for code scanning.")] = None,
     pdf: Annotated[
         Path | None, typer.Option(help="Write the PDF release record here.")
+    ] = None,
+    sbom: Annotated[
+        Path | None, typer.Option(help="Write a CycloneDX SBOM here.")
     ] = None,
     json_out: Annotated[
         Path | None, typer.Option("--json", help="Write the verdict as JSON.")
@@ -430,6 +450,7 @@ def gate(
         markdown_out=markdown_out,
         sarif=sarif,
         pdf=pdf,
+        sbom=sbom,
         warn_only=warn_only,
     )
 

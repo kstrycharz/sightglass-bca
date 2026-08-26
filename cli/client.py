@@ -170,6 +170,17 @@ class SightglassClient:
             ) from None
         except urllib.error.URLError as exc:
             raise ApiError(f"cannot reach {self.base_url}: {exc.reason}") from None
+        except TimeoutError:
+            # A read that stalls *after* the response headers arrive raises a
+            # bare TimeoutError, not URLError — so it escaped both handlers
+            # above and reached a build agent as a Python traceback. A CI step
+            # gets a sentence and an exit code, never a stack.
+            raise ApiError(
+                f"{method} {path} timed out after {timeout_s or self._timeout_s:.0f}s. "
+                f"Large artifacts can exceed the default; raise --timeout."
+            ) from None
+        except OSError as exc:
+            raise ApiError(f"{method} {path} failed: {exc}") from None
         finally:
             if isinstance(body, _MultipartBody):
                 body.close()
@@ -270,6 +281,18 @@ class SightglassClient:
             ) from None
         except urllib.error.URLError as exc:
             raise ApiError(f"cannot reach {self.base_url}: {exc.reason}") from None
+        except TimeoutError:
+            raise ApiError(
+                f"GET report.pdf timed out after {self._timeout_s:.0f}s. "
+                f"Rendering a report for a large artifact can exceed the default; "
+                f"raise --timeout."
+            ) from None
+        except OSError as exc:
+            raise ApiError(f"GET report.pdf failed: {exc}") from None
+
+    def get_sbom(self, run_id: str) -> dict[str, Any]:
+        result = self._request("GET", f"/api/runs/{run_id}/sbom")
+        return dict(result or {})
 
     def get_sarif(self, run_id: str) -> dict[str, Any]:
         result = self._request("GET", f"/api/runs/{run_id}/sarif")
@@ -290,7 +313,7 @@ class SightglassClient:
         failure would look like a stuck pipeline rather than a network problem.
         """
         deadline = time.monotonic() + timeout_s
-        terminal = {"completed", "failed", "cancelled"}
+        terminal = {"completed", "degraded", "failed", "cancelled"}
         while True:
             run = self.get_run(run_id)
             status = str(run.get("status", ""))

@@ -118,12 +118,89 @@ Append-only; supersede rather than edit.
 - **ADR-0021** — Rules carry an explicit exclusion list, not negative lookaheads (2026-08-19)
 - **ADR-0022** — The static analyzer parallelises inside one container (2026-08-19)
 - **ADR-0023** — The API authenticates by default, with two scopes (2026-08-24)
+- **ADR-0024** — Schema changes ship as migrations; start-up refuses a stale schema (2026-08-25)
+- **ADR-0025** — A run is claimed with a conditional UPDATE, committed immediately (2026-08-25)
+- **ADR-0026** — Response models are constructed, not validated from ORM objects (2026-08-25)
 
 ---
 
 ## 4. Progress log
 
 Reverse-chronological.
+
+### 2026-08-25 — migrations; a failed analyzer can no longer look clean
+**The failure that set the agenda.** Adding a `components` column to
+`RunManifest` and redeploying broke the stack: `create_all()` reported success
+because the *table* existed, and it is structurally blind to a missing
+*column*. Every run read returned 500, and a 213 MB scan died at the manifest
+write with the artifact already uploaded, unpacked and scanned. No test could
+have caught it — every test builds its schema from the current models, so the
+two agree by construction. Only a pre-existing database disagrees.
+
+**Built:** Alembic, properly (ADR-0024). `alembic.ini`, an `env.py` that
+borrows the application's own connection so the migrated schema is necessarily
+the one the process will query, a `0001_baseline` describing the schema as it
+stood *before* migrations existed, and `0002_manifest_components`.
+`upgrade_schema()` handles all three states a deployment can be in — empty,
+created by the old bootstrap (stamped at the baseline, then upgraded), or
+already at head. `create_all()` is now tests-only, and a failed migration
+aborts the boot instead of logging a warning and serving anyway.
+
+**Verified against the live populated database**, not a scratch one: the API
+container stamped `0001_baseline`, applied `0002`, logged `api.schema_current`,
+and all 18 existing manifests survived. That is the adoption path every
+existing deployment will take, exercised once, for real.
+
+**Then the same scan found a worse bug.** The static analyzer exited 1 in 0.97s
+— the image had never been given `core/composition/` — and the run recorded
+`status=completed, findings=0`. A clean bill of health for a 213 MB installer
+nobody had looked inside. The **gate caught it** and returned INCONCLUSIVE with
+"static (failed) did not finish", exit 3, exactly as ADR-0018 requires; the
+control worked. But the run, the API and the dashboard all said *completed*,
+and only the gate disagreed.
+
+Fixed by making the run status honest: `RunStatus.DEGRADED`, set from the
+stages themselves. "Which stages are degraded" now has one definition in
+`core/pipeline/stages.py` that both the run status and the gate read, because
+deriving that answer twice is what let them diverge.
+
+**Also fixed:** a read that stalls after the response headers arrive raises a
+bare `TimeoutError`, which is not a `URLError` and matched no handler — so a
+build agent got a forty-line Python traceback instead of a sentence and an exit
+code. Both `urlopen` call sites now name the remedy (`--timeout`).
+
+**Then two more, both caught by running the scan rather than by reading it.**
+
+*A run being scanned looked abandoned.* The whole scan runs in one transaction,
+so the RUNNING transition was flushed but never committed — for eight minutes
+every other connection read the run as `queued`, including the orphan sweep,
+whose grace period is five. It requeued a run at `age_s=399` while its original
+task was still inside the static analyzer, and a second `scan_run` was
+dispatched for the same 213 MB artifact. Watched it happen live. The transition
+is now committed, and the claim is a conditional UPDATE rather than a
+read-then-write, because Celery is at-least-once and a duplicate delivery must
+lose the race rather than join it.
+
+*The run detail endpoint took 58 seconds.* `ArtifactOut.children` and
+`Artifact.children` share a name, so `model_validate` on an ORM object made
+Pydantic read the relationship and lazy-load each node's entire subtree from
+the database — recursively, per node, and discarded on the next line. The
+endpoint the CLI polls every 20 seconds. Building the node field by field, and
+capping the tree at 500 nodes (68 976 artifacts is not a thing a browser
+renders), took it to **0.096s**.
+
+**Verified end to end on the NVIDIA AI Workbench installer** (213 MB, 68 976
+artifacts): both stages completed, 45 findings, run detail in 0.096s, a
+CycloneDX 1.5 SBOM with **1 003 components** — 811 npm and 192 Go modules read
+from `Go buildinfo` — 705 carrying a declared licence, and a PDF release record.
+Four of those 1 003 declared `./LICENSE.md` as their licence; a path is not an
+SPDX expression, and a licence field a tool cannot evaluate is worse than an
+absent one, so file pointers are now dropped.
+
+**Verified:** 473 unit tests (29 new), mypy strict, ruff clean, `tsc` clean.
+The migration tests assert the thing that actually failed — that every column
+the ORM will select exists after migrating — rather than that the migration ran.
+
 
 ### 2026-08-24 — API authentication; `sightglass gate`
 **Built:** `core/auth.py` (token minting, hashing, scope rules — stdlib only,
@@ -197,41 +274,38 @@ append-only by design and had grown to 320 lines, pushing this file to 709 —
 able to fix it. Nothing was edited in the move; §3 keeps a one-line index.
 
 ### 2026-08-19 — validated through the real stack; analyzer parallelised
-**Ran the whole thing for real,** which the previous session had not: Docker
-up, images built, compose stack healthy, artifacts uploaded through the API,
-scanned in the sandbox, gated by the CLI. The M0 isolation probe still passes
-from inside the container (not root, read-only rootfs, no TCP, no DNS, no
-userns, no ptrace).
+**Ran the whole thing for real,** which the previous session had not: compose
+stack healthy, artifacts uploaded through the API, scanned in the sandbox,
+gated by the CLI. The M0 isolation probe still passes from inside the container.
 
 **The gate works end to end.** A real ripgrep release gives PASS, exit 0. A
 planted binary with fabricated credentials gives BLOCKED, exit 1, five
-violations (3 critical, 2 high), with the public GitHub URL correctly
-excluded. SARIF 2.1.0 validates, byte offsets are present, fingerprints match
-the gate's finding ids, and no plaintext reaches the file.
+violations, with the public GitHub URL correctly excluded. SARIF 2.1.0
+validates, byte offsets are present, fingerprints match the gate's finding ids,
+and no plaintext reaches the file.
 
-**The data is good, and verified against the bytes.** ripgrep's `rg.exe`
-findings pointed at offsets 3072616, 3200336, 3200488 — every one lands
-exactly on a `C:\Users\runneradmin\.cargo\registry\...` path in the real
-binary. That is a true positive: a release build carrying the CI runner's
-account name. 91 distinct values collapse into one finding with 91 locations.
-The in-process field harness and the real sandboxed pipeline agree rule for
-rule (27 findings on the PowerShell tree, identical breakdown), which
-validates both.
+**The data is verified against the bytes.** ripgrep findings at offsets
+3072616, 3200336, 3200488 each land exactly on a
+`C:\Users\runneradmin\.cargo\registry\...` path — a release build carrying the
+CI runner's account name. 91 distinct values collapse into one finding with 91
+locations. The in-process field harness and the sandboxed pipeline agree rule
+for rule (27 findings on the PowerShell tree), validating both.
 
 **Found by running it:** the API container was serving an image built before
 `api/routers/gate.py` existed, so every `POST .../gate` returned 404 while the
 scan itself succeeded — invisible to any test, obvious on first deploy.
 
 **Performance.** Profiling contradicted the obvious assumption: container
-spinup is ~0.5s and a scan spawns two containers, so it is ~1s of a 35s job.
-The cost was a sequential per-file loop. Now parallel (ADR-0022): 35.4s to
-13.1s at 4 CPUs, 10.7s at 8, byte-identical output. Recon's extraction is
-split too (9.0s to 2.2s) while its rarity sweep stays central.
+spinup is ~0.5s across two containers, ~1s of a 35s job. The cost was a
+sequential per-file loop. Now parallel (ADR-0022): 35.4s to 13.1s at 4 CPUs,
+10.7s at 8, byte-identical output. Recon's extraction is split too (9.0s to
+2.2s) while its rarity sweep stays central.
 
-**Also confirmed:** the run-root translation footgun is real — pointing
-`SIGHTGLASS_RUN_ROOT` at a Windows path without `SIGHTGLASS_RUN_ROOT_HOST`
-gives the analyzer an empty `/input`. It exits 2 with "no artifacts found"
-rather than reporting a clean scan, which is the right failure.
+**Also confirmed:** pointing `SIGHTGLASS_RUN_ROOT` at a Windows path without
+`SIGHTGLASS_RUN_ROOT_HOST` gives the analyzer an empty `/input`. It exits 2
+with "no artifacts found" rather than reporting a clean scan — the right
+failure.
+
 
 ### 2026-08-19 — detection fixes from the field corpus
 **Built:** `scripts/field_test.py`, which runs the production components
@@ -289,8 +363,13 @@ session hides); the API tests all failed "no such table" because each session
 opened its own in-memory SQLite (→ `StaticPool`, and the lifespan is skipped in
 tests where it was dialling a real Postgres).
 
-### 2026-08-17 — M1 complete, plus the Ollama slice of M3
-**Built:** the SQLAlchemy schema; ingest with the attestation gate;
+### 2026-08-17 — M0 and M1 complete, plus the Ollama slice of M3
+**M0 built:** `core/sandbox/` in full — `SandboxSpec`, the `SandboxDriver` ABC,
+`DockerDriver`, watchdog, reaper, Podman/gVisor stubs; the seccomp allowlist;
+the `sightglass/hello:dev` probe; FastAPI health probes; Celery with six
+queues; the compose stack; Makefile + `make.ps1`; CI with six jobs.
+
+**M1 built:** the SQLAlchemy schema; ingest with the attestation gate;
 content-addressed MinIO storage; the detection engine (`core/rules/`) with
 ASCII + UTF-16LE extraction, entropy and masking, a 17-rule seed pack and a
 44-entry false-positive corpus; the `sightglass/static` analyzer image; the
@@ -298,37 +377,20 @@ correlator; the scan pipeline and Celery tasks; the REST API; the Next.js
 dashboard; the Ollama provider with egress enforcement; LLM triage with the
 severity floor.
 
-**Verified:** 102 unit tests, mypy strict, ruff clean. End to end against a
-real stack: upload → sandboxed scan → 9 findings from 10 evidence rows →
-triage on qwen2.5-coder:14b in 21.4s. Three of the nine were UTF-16LE only.
-The severity floor was *demonstrated*: the model called a shipped private key
-a false positive and was overruled into `needs_review` (ADR-0012), while the
-medium-severity PDB path below the floor was dismissed as asked.
+**Verified:** 102 unit tests, 17 integration tests, mypy strict, ruff clean.
+Upload → sandboxed scan → 9 findings from 10 evidence rows → triage on
+qwen2.5-coder:14b in 21.4s; three of the nine were UTF-16LE only. The severity
+floor was *demonstrated*: the model called a shipped private key a false
+positive and was overruled into `needs_review` (ADR-0012).
 
-**Broke, then fixed:** `Finding.id` as a sole primary key died on any re-scan
-(→ composite key, ADR-0010); a false-positive corpus entry silently disabled a
-critical rule by matching its structural marker rather than a credential value;
-`core.rules` transitively imported SQLAlchemy, which would have forced an ORM
-into the analyzer image (→ `core/vocab.py`, ADR-0011); `config/` was in neither
-the backend image nor the dev mounts, so triage reported the LLM as disabled.
-
-### 2026-08-17 — M0 complete
-**Built:** repo skeleton; `core/sandbox/` in full — `SandboxSpec`, the
-`SandboxDriver` ABC, `DockerDriver`, watchdog, reaper, Podman/gVisor stubs; the
-seccomp allowlist; the `sightglass/hello:dev` reference analyzer doubling as an
-isolation probe; FastAPI app with health probes; Celery with six queues; the
-compose stack; Makefile + `make.ps1`; CI with six jobs.
-
-**Verified:** 64 unit tests, 17 integration tests, mypy strict, ruff clean.
-`sightglass sandbox hello` confirms the boundary from inside the container; the
-watchdog kills a SIGTERM-ignoring container; a memory hog is stopped rather
-than swapping the host.
-
-**Broke, then fixed:** the acceptance check failed on its first run —
-`write_work_tmpfs` returned `PermissionError`, because a tmpfs mount is created
-root-owned 0755 and masks whatever the image did underneath (ADR-0005). Exactly
-the class of bug the from-inside probe exists to catch, and invisible to a test
-that only inspects the container's declared config.
+**Broke, then fixed:** a tmpfs mount is created root-owned 0755 and masks
+whatever the image did underneath, so the very first acceptance run failed
+(ADR-0005) — the class of bug the from-inside probe exists to catch;
+`Finding.id` as a sole primary key died on any re-scan (→ composite key,
+ADR-0010); a false-positive corpus entry silently disabled a critical rule by
+matching its structural marker rather than a credential value; `core.rules`
+transitively imported SQLAlchemy, which would have forced an ORM into the
+analyzer image (→ `core/vocab.py`, ADR-0011).
 
 ---
 
@@ -368,6 +430,8 @@ computation the gate already does, surfaced for a human rather than a pipeline.
 | Medium | `NetworkMode.SINKHOLE` raises in `DockerDriver._build_create_kwargs`. Dynamic analysis lands M5. Failing loudly is deliberate — a silent fallback to a bridge would hand an artifact real egress. |
 | Medium | The seccomp allowlist has only been exercised against a slim Python image. Ghidra (JVM) and Wine are likely to need additions. Validate per image as they are built; do not weaken the profile globally in response to one failure. |
 | Medium | `_active_run_ids()` in `core/orchestrator/tasks.py` returns `None` until the `runs` table exists, degrading the reaper to age-based cleanup. Wire it in M1. |
+| Medium | The artifact tree in the run detail response is capped at 500 nodes. The count stays exact and every artifact is still scanned, but there is no way to page through the rest — a real explorer needs its own paginated endpoint. |
+| Low | `ManifestOut` exposes neither `recon` nor `components`; both are reachable only through their own endpoints. Fine for now, surprising if you read the schema. |
 | Low | `make corpus` and `make airgap-bundle` exit 1 with a pointer to their milestone (M2, M6). |
 | Low | Base image digests are pinned inline in Dockerfiles. `make refresh-digests` prints current values but does not rewrite them. |
 | Low | No `docker-compose` healthcheck on the workers; a wedged worker is only visible in logs. |

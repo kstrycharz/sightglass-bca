@@ -109,6 +109,10 @@ class RunDetail(RunSummary):
     stages: list[StageOut] = Field(default_factory=list)
     manifest: ManifestOut | None = None
     artifact_tree: ArtifactOut | None = None
+    artifact_tree_truncated: bool = False
+    """The tree is capped. A recursive installer unpacks to tens of thousands
+    of files, which no browser renders and no operator reads; the count in the
+    summary remains exact."""
     previous_run_id: str | None = None
 
 

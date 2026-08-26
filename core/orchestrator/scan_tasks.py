@@ -25,10 +25,18 @@ def scan_run(self: Any, run_id: str) -> dict[str, Any]:
     retried scan of a hung artifact just hangs again. The run state machine
     records the failure and a human decides whether to re-run.
     """
-    from core.pipeline.scan import run_scan
+    from core.pipeline.scan import RunAlreadyClaimedError, run_scan
 
-    with session_scope() as session:
-        outcome = run_scan(run_id, session)
+    try:
+        with session_scope() as session:
+            outcome = run_scan(run_id, session)
+    except RunAlreadyClaimedError as exc:
+        # A duplicate delivery, not a failure. Celery is at-least-once, and the
+        # orphan sweep can re-dispatch a run whose original task is alive. The
+        # worker holding the claim is doing the work; this one returns quietly
+        # rather than failing the task and making a healthy run look broken.
+        log.info("scan.duplicate_delivery", run_id=run_id, detail=str(exc))
+        return {"run_id": run_id, "status": "already_running", "skipped": True}
 
     return {
         "run_id": outcome.run_id,

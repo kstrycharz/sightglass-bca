@@ -118,11 +118,13 @@ def get_run(run_id: str, session: Annotated[Session, Depends(get_session)]) -> R
         manifest = ManifestOut.model_validate(run.manifest)
         manifest.fingerprint = run.manifest.fingerprint
 
+    tree, tree_truncated = _build_tree(session, run)
     return RunDetail(
         **summary.model_dump(),
         stages=[StageOut.model_validate(s) for s in stages],
         manifest=manifest,
-        artifact_tree=_build_tree(session, run),
+        artifact_tree=tree,
+        artifact_tree_truncated=tree_truncated,
         previous_run_id=run.previous_run_id,
     )
 
@@ -250,10 +252,33 @@ def _summarise(session: Session, run: Run) -> RunSummary:
     )
 
 
-def _build_tree(session: Session, run: Run) -> ArtifactOut | None:
-    artifacts = session.scalars(select(Artifact).where(Artifact.run_id == run.id)).all()
+# A recursive installer unpacks to tens of thousands of artifacts — the NVIDIA
+# AI Workbench setup yields 68 975. Building a Pydantic node for each and
+# serialising the result took 58 seconds per request, and `sightglass scan`
+# polls this endpoint every 20 seconds for the length of the scan. No browser
+# renders a tree that size either, so the cap costs nothing an operator wanted.
+MAX_TREE_NODES = 500
+
+
+def _build_tree(session: Session, run: Run) -> tuple[ArtifactOut | None, bool]:
+    """The artifact tree, bounded. Returns the root and whether it was capped.
+
+    Ordered by depth so the cap keeps the top of the tree — the part that shows
+    what the artifact *is* — rather than an arbitrary slice of the deepest
+    leaves. A child whose parent fell outside the cap is dropped with it, so
+    what remains is always a connected tree rather than orphaned fragments.
+    """
+    artifacts = session.scalars(
+        select(Artifact)
+        .where(Artifact.run_id == run.id)
+        .order_by(Artifact.depth, Artifact.path_in_tree)
+        .limit(MAX_TREE_NODES + 1)
+    ).all()
     if not artifacts:
-        return None
+        return None, False
+
+    truncated = len(artifacts) > MAX_TREE_NODES
+    artifacts = artifacts[:MAX_TREE_NODES]
 
     # Findings per artifact, so a tree node carries a badge and the operator can
     # see at a glance which nested file is the problem — which is the whole
@@ -266,18 +291,36 @@ def _build_tree(session: Session, run: Run) -> ArtifactOut | None:
         ).all()
     )
 
+    # Already ordered by (depth, path) in SQL, so parents precede their
+    # children and insertion order is the display order.
     by_parent: dict[str | None, list[Artifact]] = {}
-    for artifact in sorted(artifacts, key=lambda a: (a.depth, a.path_in_tree)):
+    for artifact in artifacts:
         by_parent.setdefault(artifact.parent_id, []).append(artifact)
 
     def build(artifact: Artifact) -> ArtifactOut:
-        node = ArtifactOut.model_validate(artifact)
-        node.finding_count = finding_counts.get(artifact.id, 0)
-        node.children = [build(child) for child in by_parent.get(artifact.id, [])]
-        return node
+        # Constructed field by field rather than with `model_validate`.
+        # `ArtifactOut.children` and `Artifact.children` share a name, so
+        # validating from the ORM object made Pydantic read the relationship —
+        # lazy-loading the node's entire subtree from the database, recursively,
+        # for every node, and then discarding all of it on the next line. 500
+        # nodes took 58 seconds; the same 500 take under a tenth of one.
+        return ArtifactOut(
+            id=artifact.id,
+            name=artifact.name,
+            path_in_tree=artifact.path_in_tree,
+            depth=artifact.depth,
+            sha256=artifact.sha256,
+            size_bytes=artifact.size_bytes,
+            kind=artifact.kind,
+            media_type=artifact.media_type,
+            architecture=artifact.architecture,
+            identified=artifact.identified or {},
+            finding_count=finding_counts.get(artifact.id, 0),
+            children=[build(child) for child in by_parent.get(artifact.id, [])],
+        )
 
     roots = by_parent.get(None, [])
-    return build(roots[0]) if roots else None
+    return (build(roots[0]) if roots else None), truncated
 
 
 @router.post("/{run_id}/discover", dependencies=[Depends(require_scope(Scope.ADMIN))])

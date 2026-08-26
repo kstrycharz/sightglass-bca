@@ -17,13 +17,13 @@ from __future__ import annotations
 import json
 import os
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from core.config import SIGHTGLASS_VERSION, get_settings
@@ -31,6 +31,7 @@ from core.models import Artifact, Evidence, Run, RunManifest, RunStage, Suppress
 from core.models.base import new_uuid
 from core.models.enums import RunStatus, StageStatus
 from core.pipeline.correlator import correlate
+from core.pipeline.stages import degraded_stages, describe_degraded
 from core.rules import load_rule_pack
 from core.sandbox import (
     BindMount,
@@ -73,15 +74,53 @@ class ScanOutcome:
     error: str | None = None
 
 
+class RunAlreadyClaimedError(RuntimeError):
+    """Another worker is already scanning this run."""
+
+
+def _claim(run_id: str, session: Session) -> bool:
+    """Move the run from `queued` to `running`, atomically.
+
+    Returns False if somebody else got there first.
+
+    A conditional UPDATE rather than read-then-write, because Celery delivers
+    at least once and two workers can hold the same message. Observed in the
+    field: the orphan sweep requeued a run at age 399s while its original task
+    was still inside the static analyzer, and a second `scan_run` was
+    dispatched for the same 213 MB artifact — two sets of analyzer containers
+    racing to write the same rows. The commit below closes the window that
+    made the run *look* abandoned; this closes the race itself, which
+    at-least-once delivery can open for other reasons too.
+    """
+    claimed = session.execute(
+        update(Run)
+        .where(Run.id == run_id, Run.status == RunStatus.QUEUED)
+        .values(status=RunStatus.RUNNING, started_at=datetime.now(UTC))
+    ).rowcount
+    # Committed rather than flushed: the whole scan runs inside one
+    # transaction, so until this lands every other connection still reads the
+    # run as `queued` — eight minutes of a dashboard showing "queued" while two
+    # analyzer containers work, and eight minutes in which the orphan sweep is
+    # entitled to conclude the task was lost.
+    session.commit()
+    return bool(claimed)
+
+
 def run_scan(run_id: str, session: Session) -> ScanOutcome:
     """Execute a full scan. Owns the run's state transitions."""
     run = session.get(Run, run_id)
     if run is None:
         raise LookupError(f"run {run_id} not found")
 
-    run.status = RunStatus.RUNNING
-    run.started_at = datetime.now(UTC)
-    session.flush()
+    if not _claim(run_id, session):
+        # Not an error: a duplicate delivery is expected occasionally, and the
+        # worker that holds the claim is doing the work. Returning the run's
+        # actual state keeps this honest in the task result.
+        session.refresh(run)
+        log.warning("scan.already_claimed", run_id=run_id, status=str(run.status))
+        raise RunAlreadyClaimedError(f"run {run_id} is already {run.status}")
+
+    session.refresh(run)
 
     settings = get_settings()
     run_dir = Path(settings.run_root) / run_id
@@ -98,9 +137,20 @@ def run_scan(run_id: str, session: Session) -> ScanOutcome:
         # everything inside it. It does not outlive the run.
         shutil.rmtree(run_dir, ignore_errors=True)
 
-    run.status = RunStatus.COMPLETED
+    # A run whose analyzers did not all finish is not a completed run. Saying
+    # otherwise is how a failed static stage became a clean bill of health on a
+    # 213 MB installer: findings=0, status=completed, nothing to look at.
+    degraded = degraded_stages(session, run.id)
+    if degraded:
+        described = describe_degraded(degraded)
+        run.status = RunStatus.DEGRADED
+        run.error = "; ".join(described)[:2000]
+        log.warning("scan.degraded", run_id=run.id, stages=described)
+    else:
+        run.status = RunStatus.COMPLETED
+
     run.finished_at = datetime.now(UTC)
-    return outcome
+    return replace(outcome, status=run.status)
 
 
 def _execute(run: Run, session: Session, run_dir: Path) -> ScanOutcome:
@@ -193,6 +243,7 @@ def _execute(run: Run, session: Session, run_dir: Path) -> ScanOutcome:
             },
             residue=static_payload.get("residue") or [],
             recon=static_payload.get("recon") or {},
+            components=static_payload.get("components") or {},
         )
     )
     _link_previous_run(run, root, session)
@@ -273,7 +324,12 @@ def _run_static(
     session.add(stage)
     session.flush()
 
-    command: list[str] = ["--recon", "--emit-residue", str(RESIDUE_SAMPLE_SIZE)]
+    command: list[str] = [
+        "--recon",
+        "--components",
+        "--emit-residue",
+        str(RESIDUE_SAMPLE_SIZE),
+    ]
     if run.retain_plaintext:
         command.append("--include-plaintext")
 
