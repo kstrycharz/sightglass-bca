@@ -612,3 +612,96 @@ driver's job is to run a container under a boundary, not to produce images.
 **Leave it and fix the documentation.** The correct sequence was already
 documented in one place and wrong in two others. A deployment step that is only
 discoverable by reading the right file is the failure this removes.
+
+---
+
+## ADR-0029 — The API is the only migrator, and everything else waits for it
+
+**Date:** 2026-08-27
+**Status:** Accepted
+
+### Context
+
+`docker compose up` is the whole deployment (ADR-0028 finished the build half of
+that). What it produced was a stack that came up in an order nothing enforced.
+
+Only the API migrates: `api/main.py`'s lifespan calls `upgrade_schema()`, and
+uvicorn does not serve until the lifespan has finished. Every other service that
+reads the database — both worker lanes, beat, and the dashboard — depended on
+Postgres being *healthy*, which means Postgres accepts connections, not that it
+has any tables. On a cold start they raced the migration.
+
+The race was mostly survivable by luck. A scan can only be submitted through the
+API, which is up only after migrating, so the fast lane usually had work only
+once the schema existed. Beat's reaper is the exception: it runs on a schedule
+from the moment beat starts, and `_active_run_ids()` returning `None` against a
+missing `runs` table was already documented as degrading it to age-based
+cleanup. That is a race that had been showing up as a known issue rather than as
+a startup failure.
+
+Separately, a worker that was running but wedged — a task that never returns, a
+dropped broker connection — was visible only by reading logs, carried in
+CLAUDE.md §6 as debt. Compose restarts a process that exits; it cannot see one
+that stopped making progress.
+
+### Decision
+
+Everything that reads the database waits on `api: condition: service_healthy`.
+A passing `/healthz` is exactly the signal wanted, because uvicorn serves only
+after the lifespan migration completes — so the edge means "the schema exists",
+not merely "a process was launched". `web` moves from `service_started` to the
+same condition for the same reason.
+
+Both worker lanes get a healthcheck that pings *their own* Celery node:
+`python -m core.orchestrator.health`. `celery inspect ping` with no destination
+answers for the whole cluster, which would let the fast lane look healthy for as
+long as the heavy lane replied.
+
+That check is a Python module rather than a shell one-liner because it has to
+name the node, and neither shell route is safe: `$HOSTNAME` is a bash variable
+while the healthcheck runs under `sh`, and `hostname(1)` is not guaranteed in a
+slim image. The interpreter is guaranteed — it is a Python image.
+
+Beat gets no healthcheck. It answers no `inspect ping`, and the base image has
+no `pgrep` to approximate one with. The gap is written into the compose file
+instead, and a unit test asserts the explanation is still there.
+
+Every long-lived service also pins `logging` to a rotating json-file driver.
+Docker's default never rotates, so a stack left running fills the disk with logs
+of its own healthchecks — which these changes make considerably more frequent.
+
+### Consequences
+
+Cold start is slower and correct: workers now wait for the API rather than
+starting beside it. A stack whose API cannot become healthy no longer brings up
+workers that would have failed on their first database access; it fails visibly
+at the API instead.
+
+`docker compose up -d worker` now pulls in Postgres, Redis, MinIO and the API,
+because that is genuinely what a worker needs to do anything.
+
+The invariant this rests on — that the API is the only migrator — is not
+self-enforcing, so a test asserts it by scanning the source for other callers of
+`upgrade_schema()`. If a second one ever appears, the dependency edges stop
+meaning what they say, and that test is what says so.
+
+### Alternatives rejected
+
+**Run migrations in every service's entrypoint.** Concurrent `alembic upgrade`
+against one database is a lock convoy at best; Alembic's version table is not a
+coordination primitive. It also spreads a schema-write privilege across every
+container in the stack.
+
+**A dedicated one-shot `migrate` service everything depends on.** Cleaner in
+principle, and worth doing if a second migrator ever appears. Rejected now
+because it splits `upgrade_schema()` away from the process whose code the schema
+has to match, and the API already refuses to serve a schema older than itself —
+moving the migration out would make that guarantee weaker, not stronger.
+
+**`condition: service_started` with retries in the worker.** Trades a startup
+guarantee for a runtime one, and puts a retry loop around every database access
+rather than at one point where the answer is known.
+
+**A shell healthcheck using `$HOSTNAME` or `hostname(1)`.** Both assume
+something about the image that is not true or not guaranteed, and the failure
+mode is a healthcheck that reports a healthy worker as unhealthy forever.

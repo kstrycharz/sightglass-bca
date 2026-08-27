@@ -19,6 +19,16 @@
 
 name: sightglass
 
+# Docker's default json-file driver never rotates, so a stack left running for a
+# week fills the disk with logs of its own healthchecks. Every long-lived
+# service anchors this.
+x-logging: &logging
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
 x-backend-env: &backend-env
   SIGHTGLASS_DATABASE_URL: postgresql+psycopg://sightglass:sightglass@postgres:5432/sightglass
   SIGHTGLASS_REDIS_URL: redis://redis:6379/0
@@ -28,6 +38,7 @@ x-backend-env: &backend-env
   SIGHTGLASS_RUN_ROOT: /var/lib/sightglass/runs
   SIGHTGLASS_RUN_ROOT_HOST: ${SIGHTGLASS_RUN_ROOT_HOST:-/var/lib/sightglass/runs}
   SIGHTGLASS_REPO_ROOT: /app
+  SIGHTGLASS_ENVIRONMENT: ${SIGHTGLASS_ENVIRONMENT:-production}
   SIGHTGLASS_LOG_LEVEL: ${SIGHTGLASS_LOG_LEVEL:-INFO}
   SIGHTGLASS_EGRESS_POLICY: ${SIGHTGLASS_EGRESS_POLICY:-deny}
   # The API demands a token by default. On first start with no tokens the
@@ -56,6 +67,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+    <<: *logging
     restart: unless-stopped
 
   redis:
@@ -66,6 +78,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+    <<: *logging
     restart: unless-stopped
 
   minio:
@@ -81,6 +94,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+    <<: *logging
     restart: unless-stopped
 
   # One-shot: create the artifact bucket, then exit.
@@ -200,6 +214,7 @@ services:
       timeout: 5s
       retries: 10
       start_period: 20s
+    <<: *logging
     restart: unless-stopped
 
   # Fast lanes: string scanning, unpacking, correlation. Concurrency is high
@@ -240,6 +255,23 @@ services:
         condition: service_completed_successfully
       analyzer-unpack:
         condition: service_completed_successfully
+      # Only the API migrates (api/main.py's lifespan calls upgrade_schema).
+      # Uvicorn does not serve until that has finished, so a passing /healthz
+      # is the signal that the schema exists. Without this edge a worker can be
+      # running against a database that has no tables yet, and the first thing
+      # it touches is a 500 rather than a wait.
+      api:
+        condition: service_healthy
+    healthcheck:
+      # Pings this container's own Celery node, so a worker that is up but
+      # wedged fails its check instead of being covered by the other lane. See
+      # core/orchestrator/health.py for why this is not a shell one-liner.
+      test: ["CMD", "python", "-m", "core.orchestrator.health"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 40s
+    <<: *logging
     restart: unless-stopped
 
   # Slow lane. Separate service so a wedged Ghidra job cannot starve the fast
@@ -266,6 +298,19 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      # Ghidra and dynamic tasks write findings like any other lane, so this
+      # worker needs the schema too. It was depending on redis alone.
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-m", "core.orchestrator.health"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 40s
+    <<: *logging
     restart: unless-stopped
 
   beat:
@@ -282,6 +327,13 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      # Beat's scheduled tasks (the reaper) read the runs table.
+      api:
+        condition: service_healthy
+    # No healthcheck: beat answers no `inspect ping`, and the slim base image
+    # has no pgrep to fake one with. A wedged beat is still only visible in
+    # logs; inventing a check that cannot fail would be worse than saying so.
+    <<: *logging
     restart: unless-stopped
 
   web:
@@ -303,8 +355,11 @@ services:
     ports:
       - "${SIGHTGLASS_WEB_PORT:-3000}:3000"
     depends_on:
+      # service_started only meant the process had been launched, so the
+      # dashboard could come up and proxy to an API that was still migrating.
       api:
-        condition: service_started
+        condition: service_healthy
+    <<: *logging
     restart: unless-stopped
 
 volumes:

@@ -139,6 +139,7 @@ Append-only; supersede rather than edit.
 - **ADR-0026** — Response models are constructed, not validated from ORM objects (2026-08-25)
 - **ADR-0027** — LiteLLM is the transport; the air gap is enforced above it (2026-08-26)
 - **ADR-0028** — Analyzer images are Compose services, built by `docker compose up` (2026-08-27)
+- **ADR-0029** — The API is the only migrator, and everything else waits for it (2026-08-27)
 
 ---
 
@@ -191,7 +192,7 @@ computation the gate already does, surfaced for a human rather than a pipeline.
 | Low | `ManifestOut` exposes neither `recon` nor `components`; both are reachable only through their own endpoints. Fine for now, surprising if you read the schema. |
 | Low | `make corpus` and `make airgap-bundle` exit 1 with a pointer to their milestone (M2, M6). |
 | Low | Base image digests are pinned inline in Dockerfiles. `make refresh-digests` prints current values but does not rewrite them. |
-| Low | No `docker-compose` healthcheck on the workers; a wedged worker is only visible in logs. |
+| Low | `beat` has no healthcheck: it answers no `celery inspect ping` and the base image has no `pgrep`. Both worker lanes are covered (ADR-0029); a wedged beat is still only visible in logs. |
 | Medium | Go binaries store strings in one contiguous blob with no separators, so the printable-run extractor merges adjacent unrelated strings and a regex can match across the seam. Observed: `…per_page=30reflect:` and `dllsecur32.dllshell32.dlluserenv.dlltime`. Affects every rule on Go artifacts; needs a Go-aware string splitter, not a per-rule fix. |
 | Medium | `internal-hostname` matches Go package paths — `eq.internal`, `hash.internal`, `x509.local` — because `internal` is a reserved Go package name. 46 hits in one binary, all noise. Medium severity so it does not block, but it pads the report. |
 | Medium | The release gate has no native GitHub Action or GitLab component; `docs/CICD.md` calls the CLI directly, which works everywhere but is more wiring than a marketplace action. |

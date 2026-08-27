@@ -11,24 +11,7 @@ from __future__ import annotations
 import pytest
 
 from core.sandbox.images import ANALYZERS, DEFAULT_TAG, analyzer_image, analyzer_tag
-
-
-def _compose_service(name: str) -> str:
-    """The body of one service block in docker-compose.yml.
-
-    Splitting on two-space indentation does not work — the body lines are
-    indented four — so read to the next line that starts a sibling key.
-    """
-    from pathlib import Path
-
-    compose = Path("docker-compose.yml").read_text(encoding="utf-8").splitlines()
-    start = compose.index(f"  {name}:") + 1
-    body: list[str] = []
-    for line in compose[start:]:
-        if line.strip() and not line.startswith("    "):
-            break
-        body.append(line)
-    return "\n".join(body)
+from tests.compose import compose_service
 
 
 @pytest.fixture(autouse=True)
@@ -152,7 +135,7 @@ class TestTheBuildAndTheRunAgree:
         that means Docker Hub, no such repository, and "pull access denied for
         sightglass/static" — the build that was meant to happen never runs."""
         for name in ANALYZERS:
-            service = _compose_service(f"analyzer-{name}")
+            service = compose_service(f"analyzer-{name}")
             assert "pull_policy: build" in service, (
                 f"analyzer-{name} has no `pull_policy: build`; Compose will try to "
                 f"pull sightglass/{name} from a registry that does not have it"
