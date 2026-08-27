@@ -107,7 +107,7 @@ rules:
     tags: [slack, credential]
     tests:
       positive:
-        - "xoxb-123456789012-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx"
+        - "xoxb-000000000000-0000000000000-EXAMPLEONLYNOTAREALTOKEN"
       negative:
         - "xox-nope"
 
@@ -133,9 +133,9 @@ rules:
     tags: [stripe, credential, payment]
     tests:
       positive:
-        - "sk_live_51H8xKzLmNpQrStUvWxYz0123"
+        - "sk_live_EXAMPLEONLYNOTAREALKEY00"
       negative:
-        - "pk_live_51H8xKzLmNpQrStUvWxYz0123"
+        - "pk_live_EXAMPLEONLYNOTAREALKEY00"
 
   - id: generic-high-entropy-assignment
     name: High-entropy value assigned to a secret-shaped name

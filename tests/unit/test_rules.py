@@ -191,10 +191,10 @@ class TestScanning:
 
 class TestMasking:
     def test_masking_keeps_the_shape_not_the_secret(self) -> None:
-        masked = mask("sk_live_51H8xKzLmNpQrStUvWxYz0123")
+        masked = mask("sk_live_EXAMPLEONLYNOTAREALKEY00")
         assert masked.startswith("sk_l")
-        assert masked.endswith("0123")
-        assert "51H8xKzLmNpQrSt" not in masked
+        assert masked.endswith("EY00")
+        assert "EXAMPLEONLYNOTAREAL" not in masked
 
     def test_short_values_are_fully_masked(self) -> None:
         """Revealing 8 of 10 characters is not masking."""
