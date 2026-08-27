@@ -24,7 +24,7 @@ from core.llm.provider import EgressPolicyGuard, LLMProvider, ProviderHealth
 log = structlog.get_logger(__name__)
 
 DEFAULT_CONFIG_PATH = Path("config/llm.yaml")
-ROLES = ("triage", "explain", "remediate", "summarize")
+ROLES = ("triage", "explain", "remediate", "summarize", "investigate")
 
 
 class LLMConfigError(ValueError):
@@ -72,20 +72,60 @@ def active_config_path() -> Path:
 
 
 def ensure_runtime_config() -> Path:
-    """Seed the runtime config from the image default, once.
+    """Seed the runtime config from the image default, and back-fill new roles.
 
     Copied rather than symlinked so the shipped default stays readable as a
     reference, and so an operator can delete the runtime copy to get it back.
+
+    The back-fill exists because the runtime copy outlives upgrades by design:
+    without it, a release that adds a role ships a feature no existing
+    deployment can reach, and the only symptom is "no provider is routed to
+    'investigate'" on a version where that role is supposed to work.
+
+    Additive only, and conservative with it. An operator's routing is never
+    overwritten, and a new role is skipped rather than added when it names a
+    provider the runtime config does not define — writing that would make the
+    whole config fail to load, which is a far worse upgrade than a missing
+    role.
     """
     active = active_config_path()
-    if active.is_file():
+    packaged = Path(get_settings().repo_root) / DEFAULT_CONFIG_PATH
+
+    if not active.is_file():
+        active.parent.mkdir(parents=True, exist_ok=True)
+        if packaged.is_file():
+            active.write_text(packaged.read_text(encoding="utf-8"), encoding="utf-8")
+            log.info("llm.config_seeded", source=str(packaged), target=str(active))
         return active
 
-    packaged = Path(get_settings().repo_root) / DEFAULT_CONFIG_PATH
-    active.parent.mkdir(parents=True, exist_ok=True)
-    if packaged.is_file():
-        active.write_text(packaged.read_text(encoding="utf-8"), encoding="utf-8")
-        log.info("llm.config_seeded", source=str(packaged), target=str(active))
+    if not packaged.is_file():
+        return active
+
+    try:
+        live = yaml.safe_load(active.read_text(encoding="utf-8")) or {}
+        default = yaml.safe_load(packaged.read_text(encoding="utf-8")) or {}
+        if not isinstance(live, dict) or not isinstance(default, dict):
+            return active
+
+        live_roles = dict(live.get("roles") or {})
+        providers = live.get("providers") or {}
+        added = {
+            role: target
+            for role, target in (default.get("roles") or {}).items()
+            if role not in live_roles and target in providers
+        }
+        if added:
+            live["roles"] = {**live_roles, **added}
+            active.write_text(
+                yaml.safe_dump(live, sort_keys=False, allow_unicode=True, width=88),
+                encoding="utf-8",
+            )
+            log.info("llm.config_roles_backfilled", roles=sorted(added))
+    except Exception as exc:
+        # A malformed runtime config is load_config's problem to report, not
+        # something to fail an upgrade over.
+        log.warning("llm.config_backfill_skipped", error=str(exc))
+
     return active
 
 

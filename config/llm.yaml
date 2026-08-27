@@ -39,6 +39,11 @@ roles:
   # JSON directly. Measured, not assumed.
   discover: local-fast
   explain: local-reasoning
+  # Agentic investigation: a loop of calls, each carrying the transcript so
+  # far. Routed to the FAST model by default despite being judgement work —
+  # a reasoning model spends its budget deliberating on every turn, and a
+  # twelve-step loop multiplies that by twelve.
+  investigate: local-fast
   remediate: local-reasoning
   summarize: local-reasoning
 

@@ -303,3 +303,87 @@ def summarize_run_task(run_id: str) -> dict[str, Any]:
             "model": provider.model,
             "duration_s": round(result.call.duration_s or 0.0, 2) if result.call else 0.0,
         }
+
+
+@celery_app.task(name="sightglass.investigate_finding", queue=QUEUE_LLM, max_retries=0)
+def investigate_finding_task(run_id: str, finding_id: str) -> dict[str, Any]:
+    """Let the model investigate one finding with tools.
+
+    Deeper than `explain`, and correspondingly slower and more expensive: this
+    is a loop of model calls, each carrying the transcript so far. Per-finding
+    and on request for that reason.
+
+    The tools are read-only and scoped to this run (`core/llm/tools.py`). The
+    model never gets a shell, and this task cannot write a Finding — it writes
+    the conclusion and the transcript onto the finding a rule already produced.
+    """
+    from core.llm import load_config
+    from core.llm.investigate import apply_investigation, investigate_finding
+    from core.llm.tools import ToolBox
+    from core.models import Finding, FindingLocation, Run
+
+    provider, error = _llm_provider("investigate", run_id)
+    if error is not None:
+        return error
+
+    config = load_config()
+
+    with session_scope() as session:
+        finding = session.get(Finding, (finding_id, run_id))
+        if finding is None:
+            return {"run_id": run_id, "error": f"finding {finding_id} not found in run {run_id}"}
+
+        run = session.get(Run, run_id)
+
+        # §9: plaintext may reach a *local* provider only, and only when the
+        # run opted into retaining it and redaction is not strict. Any one of
+        # those being false means the tools mask what they return.
+        allow_plaintext = bool(
+            provider.is_local
+            and run is not None
+            and run.retain_plaintext
+            and config.redaction != "strict"
+        )
+
+        locations = list(
+            session.scalars(
+                select(FindingLocation).where(
+                    FindingLocation.finding_id == finding_id,
+                    FindingLocation.run_id == run_id,
+                )
+            )
+        )
+        path = locations[0].path_in_tree if locations else ""
+
+        toolbox = ToolBox(session, run_id, allow_plaintext=allow_plaintext)
+        result = investigate_finding(
+            provider,
+            toolbox,
+            finding,
+            path_in_tree=path,
+            location_count=len(locations) or 1,
+        )
+        session.add_all(result.calls)
+
+        # A run that ended without a conclusion still leaves its transcript:
+        # the steps are the useful part even when the summary is missing.
+        apply_investigation(finding, result, provider.model)
+
+        if result.error is not None and not result.conclusion:
+            return {
+                "run_id": run_id,
+                "finding_id": finding_id,
+                "error": result.error,
+                "steps": len(result.steps),
+            }
+
+        return {
+            "run_id": run_id,
+            "finding_id": finding_id,
+            "conclusion": result.conclusion,
+            "confidence": result.confidence,
+            "steps": len(result.steps),
+            "model": provider.model,
+            "duration_s": round(result.duration_s, 2),
+            "redaction": "none" if allow_plaintext else "strict",
+        }

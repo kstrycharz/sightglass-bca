@@ -17,6 +17,7 @@ from api.deps import get_caller, require_scope
 from api.schemas.models import (
     ArtifactOut,
     ExplainResponse,
+    InvestigateResponse,
     ManifestOut,
     RunCreated,
     RunDetail,
@@ -338,6 +339,30 @@ def explain(run_id: str, finding_id: str) -> ExplainResponse:
     if result.get("error"):
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, result["error"])
     return ExplainResponse(**result)
+
+
+@router.post(
+    "/{run_id}/findings/{finding_id}/investigate",
+    response_model=InvestigateResponse,
+    dependencies=[Depends(require_scope(Scope.ADMIN))],
+)
+def investigate(run_id: str, finding_id: str) -> InvestigateResponse:
+    """Let the model investigate one finding with read-only tools.
+
+    Deeper and slower than `explain`: a loop of model calls, each carrying the
+    transcript so far. The model chooses what to look at; it never gets a
+    shell, and nothing it does here can create a finding or change one.
+    """
+    from core.orchestrator.tasks import investigate_finding_task
+
+    try:
+        result = investigate_finding_task.apply(args=[run_id, finding_id]).get()
+    except Exception as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from None
+
+    if result.get("error"):
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, result["error"])
+    return InvestigateResponse(**result)
 
 
 @router.post(

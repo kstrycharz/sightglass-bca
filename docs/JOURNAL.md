@@ -13,6 +13,54 @@ live in [CLAUDE.md](../CLAUDE.md).
 
 ---
 
+### 2026-08-26 (5) — agentic investigation: the model gets tools, not a shell
+
+**What it does.** A `investigate` role that lets the model go and look rather
+than write from what the scanner already knew: read a byte window, decode a
+value, search the run's strings, follow what it finds. `core/llm/tools.py` is
+the tool surface, `core/llm/investigate.py` the ReAct loop, migration `0004`
+the columns, plus a task, an endpoint, and a UI panel with the transcript.
+
+**The design decision.** The ask was "access to the scan containers". It gets
+tools instead, and that is not a hedge. A shell in an analyzer container needs
+either network from that container to reach the model — which breaks the
+isolation the whole product rests on — or an orchestrator proxying arbitrary
+commands, which is the same thing with no bound on what runs. A read-only,
+run-scoped tool surface gives up nothing: "notice it is base64, decode it, look
+at what came out" is a sequence of tool calls, not a shell session.
+
+**Three real bugs, each found by running it rather than by reading it.**
+
+*It never produced valid JSON.* The model followed the protocol correctly but
+wrote `"offset": <offset of the finding>` — a placeholder, so the object did
+not parse. Fixed with JSON mode where the provider has it, plus an explicit
+"every argument must be a literal value" in the prompt.
+
+*A twelve-step failure left nothing to debug.* The malformed-response path
+consumed a step without recording anything, so the first failed run stored an
+empty transcript after ninety seconds. Malformed turns are now recorded like
+any other step — which is what made the next bug findable at all.
+
+*The model read the same sixteen bytes twelve times.* Not stupidity: `num_ctx`
+is 8192 on the local 14b, each `read_bytes` appended ~6000 characters of hex,
+and by turn three the system prompt had scrolled out of the window. It could no
+longer see the protocol or the offsets it had been given, so it repeated the
+last thing it could remember. Fixed by resending the system prompt and opening
+brief every turn while windowing the middle of the conversation, cutting tool
+results to 1200 characters, and refusing to re-execute an identical call —
+telling the model it already ran that and to move on. Six steps and a
+conclusion after that, on the same model and the same finding.
+
+**Verified end to end** on a 20-finding MSI: the loop searched for related
+strings by regex, probed the value as base64 (correctly rejected), then as hex
+(rejected), and the repetition guard caught its one stall. The mechanism works;
+the *conclusion* from a 14b is generic, which is a routing choice and is
+recorded in §6 rather than papered over.
+
+**573 unit tests** (26 on investigation, most of them about what the model is
+not allowed to do: leave the run, leak plaintext, alter a finding, run
+forever).
+
 ### 2026-08-26 (4) — LiteLLM replaces the hand-written cloud adapters
 **Why:** breadth, from something maintained. Three hand-written adapters
 covered OpenAI-compatible, Anthropic, and Google; LiteLLM covers those and a

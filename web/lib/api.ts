@@ -141,6 +141,31 @@ export interface Finding {
   llm_explanation: string | null;
   llm_explained_by: string | null;
   llm_explained_at: string | null;
+  /** From the `investigate` role. The steps are the audit trail. */
+  llm_investigation: string | null;
+  llm_investigation_steps: InvestigationStep[];
+  llm_investigation_confidence: string | null;
+  llm_investigated_by: string | null;
+  llm_investigated_at: string | null;
+}
+
+export interface InvestigationStep {
+  tool: string;
+  arguments: Record<string, unknown>;
+  ok: boolean;
+  output: string;
+  detail: string;
+}
+
+export interface InvestigateResponse {
+  run_id: string;
+  finding_id: string;
+  conclusion: string;
+  confidence: string;
+  steps: number;
+  model: string;
+  duration_s: number;
+  redaction: string;
 }
 
 export interface ExplainResponse {

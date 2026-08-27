@@ -34,7 +34,14 @@ log = structlog.get_logger(__name__)
 # Roles the console may reassign. Anything else in the file is preserved but
 # not editable here — a UI that can write a role the pipeline never reads is a
 # UI that lies about what it did.
-EDITABLE_ROLES = ("triage", "discover", "explain", "remediate", "summarize")
+EDITABLE_ROLES = (
+    "triage",
+    "discover",
+    "explain",
+    "investigate",
+    "remediate",
+    "summarize",
+)
 
 
 @dataclass(frozen=True, slots=True)

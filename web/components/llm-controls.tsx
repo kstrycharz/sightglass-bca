@@ -32,6 +32,10 @@ const ROLE_NOTES: Record<string, string> = {
   explain:
     "One call per finding, on request. Pick for quality — it is routed to a " +
     'reasoning model by default. Triggered by "Explain this finding" on a finding.',
+  investigate:
+    "A loop of calls per finding, on request — the model uses tools on the " +
+    "artifact. Pick for speed: a reasoning model deliberates on every turn, " +
+    'and there are up to twelve. Triggered by "Investigate with AI".',
   summarize:
     'One call per run. Pick for quality. Triggered by "Write summary" at the top ' +
     "of a run.",

@@ -42,7 +42,8 @@ release gate, both pulled forward so the product is usable in a pipeline.**
 Working end to end today: upload an artifact through the dashboard or the CLI,
 it is scanned in a locked-down container, and deterministic findings appear
 with offsets, encoding, and remediation. Optional AI triage classifies them,
-explains individual findings, and summarises a run. A release policy turns
+explains individual findings, investigates them agentically with read-only
+tools, and summarises a run. A release policy turns
 those findings into a ship / do-not-ship decision with a meaningful exit code,
 so Sightglass is a build-pipeline stage gate and not only a dashboard.
 
@@ -188,6 +189,8 @@ computation the gate already does, surfaced for a human rather than a pipeline.
 | Medium | `first_seen_run_id` on `Finding` is never populated. The gate computes "is new" from the baseline run's id set instead, which is correct but means the column is dead weight. |
 | Low | `click` is pinned to 8.1.8 to work around typer 0.15.1 (ADR-0020). Revisit when typer supports click 8.2+. |
 | Medium | Plaintext retention has no TTL and no auto-purge, and nothing encrypts it at rest. A run scanned with "Retain full plaintext values" leaves real secrets in Postgres indefinitely. The UI says so at the point of choosing, but §9 promises a TTL that does not exist yet. |
+| Medium | Investigation quality tracks the model hard. On a local 14b the loop runs correctly — it searches, probes encodings, and terminates — but the conclusion is often generic ("review the file and ensure it does not contain sensitive information"). The mechanism is sound; the prose needs a better model or a larger `num_ctx`, and the default routing sends `investigate` to the fast model. |
+| Low | An investigation re-reads no earlier tool output once it falls outside `MAX_CONTEXT_TURNS`; the model is told steps were omitted but cannot get them back. Fine at 12 steps, wrong if the cap ever rises much. |
 | Medium | The `remediate` role is routable and described in the settings UI as not-yet-wired, but nothing calls it. Either wire it or drop it from `EDITABLE_ROLES`. |
 | Low | `explain` and `summarize` have no cache: asking twice costs two calls. Triage caches by prompt hash within a pass; these do not, because they are user-initiated and low-volume. |
 | Low | Cloud provider adapters are unit-tested against their wire shapes but only OpenAI has been exercised against the live API (a deliberate 401). Anthropic and Google are untested end to end. |

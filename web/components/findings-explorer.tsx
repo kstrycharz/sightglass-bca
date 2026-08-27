@@ -15,7 +15,13 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { ExplainResponse, Finding, Severity, TriageResponse } from "@/lib/api";
+import type {
+  ExplainResponse,
+  Finding,
+  InvestigateResponse,
+  Severity,
+  TriageResponse,
+} from "@/lib/api";
 import { SEVERITY_ORDER } from "@/lib/severity";
 import { Button, Mono, Panel, SeverityTag, duration, relativeTime } from "@/components/ui";
 
@@ -434,6 +440,8 @@ function FindingDetail({
         )}
 
         {!deterministicOnly && <Explanation finding={finding} />}
+
+        {!deterministicOnly && <DeepInvestigation finding={finding} />}
       </div>
 
       <div className="space-y-4">
@@ -465,6 +473,129 @@ function FindingDetail({
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * The `investigate` role: the model uses tools on the artifact and reports.
+ *
+ * The transcript is collapsed but present, and that is the point rather than a
+ * detail. An investigation is the one AI output here that makes claims the
+ * scanner did not — so every claim has to be checkable against the tool call
+ * that produced it. A conclusion with nothing behind it is one to distrust,
+ * and the reader can only notice that if the steps are there to look at.
+ */
+function DeepInvestigation({ finding }: { finding: Finding }) {
+  const [conclusion, setConclusion] = useState(finding.llm_investigation);
+  const [confidence, setConfidence] = useState(finding.llm_investigation_confidence);
+  const [steps, setSteps] = useState(finding.llm_investigation_steps ?? []);
+  const [model, setModel] = useState(finding.llm_investigated_by);
+  const [at, setAt] = useState(finding.llm_investigated_at);
+  const [busy, setBusy] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function run() {
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await fetch(
+        `/api/runs/${finding.run_id}/findings/${finding.id}/investigate`,
+        { method: "POST" },
+      );
+      const body = await response.json();
+      if (!response.ok) {
+        throw new Error(body.detail ?? `investigation failed (HTTP ${response.status})`);
+      }
+      const result = body as InvestigateResponse;
+      setConclusion(result.conclusion);
+      setConfidence(result.confidence);
+      setModel(result.model);
+      setAt(new Date().toISOString());
+      // The response carries a count; the steps themselves arrive with the
+      // next fetch of the finding.
+      setSteps([]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!conclusion) {
+    return (
+      <div>
+        <Button
+          onClick={(e) => {
+            e.stopPropagation();
+            void run();
+          }}
+          disabled={busy}
+        >
+          {busy ? "Investigating…" : "Investigate with AI"}
+        </Button>
+        <p className="mt-1 text-[11px] text-content-subtle">
+          The model reads bytes, decodes values, and searches this run for
+          related strings, then reports what it found. Slower than an
+          explanation — it is several calls, not one.
+        </p>
+        {error && <p className="mt-1.5 text-xs text-critical">{error}</p>}
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded border border-accent/30 bg-accent-muted/40 p-3">
+      <Label>AI investigation — advisory</Label>
+      <p className="mt-1 whitespace-pre-wrap text-sm">{conclusion}</p>
+
+      {steps.length > 0 && (
+        <div className="mt-2">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setOpen((on) => !on);
+            }}
+            className="text-xs text-content-muted underline hover:text-content"
+          >
+            {open ? "Hide" : "Show"} the {steps.length} step
+            {steps.length === 1 ? "" : "s"} behind this
+          </button>
+          {open && (
+            <ol className="mt-1.5 space-y-1.5">
+              {steps.map((step, index) => (
+                <li key={index} className="rounded border border-border bg-surface p-2">
+                  <div className="flex items-center gap-1.5">
+                    <Mono className="text-[11px]">{step.tool}</Mono>
+                    {!step.ok && (
+                      <span className="rounded bg-critical-bg px-1 text-[9.5px] uppercase tracking-wider text-critical">
+                        failed
+                      </span>
+                    )}
+                  </div>
+                  <pre className="scroll-x mt-1 whitespace-pre-wrap font-mono text-[10.5px] text-content-muted">
+                    {step.ok ? step.output : step.detail}
+                  </pre>
+                </li>
+              ))}
+            </ol>
+          )}
+        </div>
+      )}
+
+      <p className="mt-2 text-xs text-content-muted">
+        {confidence && (
+          <>
+            Confidence <strong>{confidence}</strong>.{" "}
+          </>
+        )}
+        Investigated by <Mono>{model ?? "an AI model"}</Mono>
+        {at && ` · ${relativeTime(at)}`}. Advisory: it cannot create a finding,
+        or change this one&apos;s severity or location.
+      </p>
+      {error && <p className="mt-1.5 text-xs text-critical">{error}</p>}
     </div>
   );
 }

@@ -340,6 +340,18 @@ class Finding(Base, TimestampMixin):
     llm_explained_by: Mapped[str | None] = mapped_column(String(128))
     llm_explained_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    llm_investigation: Mapped[str | None] = mapped_column(Text)
+    """The `investigate` role's conclusion after using tools on the artifact.
+    Distinct from `llm_explanation` for the same reason that one is distinct
+    from `llm_reasoning`: explanation is written from what the scanner already
+    knew, investigation from what the model went and looked at."""
+    llm_investigation_steps: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON)
+    """Every tool call and result, in order. This is what makes the conclusion
+    checkable: a claim with no supporting step in here is a claim to distrust."""
+    llm_investigation_confidence: Mapped[str | None] = mapped_column(String(10))
+    llm_investigated_by: Mapped[str | None] = mapped_column(String(128))
+    llm_investigated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     first_seen_run_id: Mapped[str | None] = mapped_column(String(36))
     suppressed_by: Mapped[str | None] = mapped_column(String(64))
 

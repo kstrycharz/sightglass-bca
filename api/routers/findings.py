@@ -9,7 +9,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from api.deps import require_scope
-from api.schemas.models import FindingOut, FindingPatch, LlmAssessment, LocationOut
+from api.schemas.models import (
+    FindingOut,
+    FindingPatch,
+    InvestigationStep,
+    LlmAssessment,
+    LocationOut,
+)
 from core.auth import Scope
 from core.db import get_session, session_scope
 from core.models import AuditLog, Evidence, Finding, FindingLocation
@@ -247,4 +253,11 @@ def _to_out(session: Session, finding: Finding, previous_ids: set[str]) -> Findi
         llm_explanation=finding.llm_explanation,
         llm_explained_by=finding.llm_explained_by,
         llm_explained_at=finding.llm_explained_at,
+        llm_investigation=finding.llm_investigation,
+        llm_investigation_steps=[
+            InvestigationStep(**step) for step in (finding.llm_investigation_steps or [])
+        ],
+        llm_investigation_confidence=finding.llm_investigation_confidence,
+        llm_investigated_by=finding.llm_investigated_by,
+        llm_investigated_at=finding.llm_investigated_at,
     )

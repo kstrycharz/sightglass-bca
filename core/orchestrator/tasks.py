@@ -21,6 +21,7 @@ from core.orchestrator.celery_app import QUEUE_CONTROL, celery_app
 from core.orchestrator.scan_tasks import (
     discover_rules_task,
     explain_finding_task,
+    investigate_finding_task,
     scan_run,
     summarize_run_task,
     triage_run_task,
@@ -32,6 +33,7 @@ log = structlog.get_logger(__name__)
 __all__ = [
     "discover_rules_task",
     "explain_finding_task",
+    "investigate_finding_task",
     "reap_containers",
     "recover_orphaned_runs",
     "sandbox_smoke_test",

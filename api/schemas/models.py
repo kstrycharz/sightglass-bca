@@ -145,6 +145,14 @@ class LlmAssessment(BaseModel):
     assessed_at: datetime | None = None
 
 
+class InvestigationStep(BaseModel):
+    tool: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    ok: bool
+    output: str
+    detail: str = ""
+
+
 class FindingOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -192,6 +200,14 @@ class FindingOut(BaseModel):
     llm_explanation: str | None = None
     llm_explained_by: str | None = None
     llm_explained_at: datetime | None = None
+
+    # Advisory, from the `investigate` role. The steps are the point: a
+    # conclusion with no supporting tool call in them is one to distrust.
+    llm_investigation: str | None = None
+    llm_investigation_steps: list[InvestigationStep] = Field(default_factory=list)
+    llm_investigation_confidence: str | None = None
+    llm_investigated_by: str | None = None
+    llm_investigated_at: datetime | None = None
 
 
 class FindingPatch(BaseModel):
@@ -242,6 +258,17 @@ class SummaryResponse(BaseModel):
     summary: str
     model: str
     duration_s: float
+
+
+class InvestigateResponse(BaseModel):
+    run_id: str
+    finding_id: str
+    conclusion: str
+    confidence: str
+    steps: int
+    model: str
+    duration_s: float
+    redaction: str
 
 
 class RunCreated(BaseModel):

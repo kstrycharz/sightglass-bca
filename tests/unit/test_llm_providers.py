@@ -259,3 +259,100 @@ class TestCatalogMatchesLiteLLM:
             if entry.id in placeholders or entry.kind == "ollama":
                 continue
             assert resolve_provider(entry.default_model), entry.id
+
+
+class TestTheRuntimeConfigOutlivesARebuild:
+    """Everything under `repo_root` is baked into the image, so a config the
+    wizard wrote there would be discarded by the next `docker compose build` —
+    silently, taking the operator's provider choice with it."""
+
+    def _env(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, packaged: dict, live: dict | None
+    ) -> Path:
+        from core.config import get_settings
+
+        repo = tmp_path / "repo"
+        (repo / "config").mkdir(parents=True)
+        (repo / "config" / "llm.yaml").write_text(yaml.safe_dump(packaged), encoding="utf-8")
+        data = tmp_path / "data"
+        data.mkdir()
+        if live is not None:
+            (data / "llm.yaml").write_text(yaml.safe_dump(live), encoding="utf-8")
+
+        monkeypatch.setenv("SIGHTGLASS_DATA_DIR", str(data))
+        monkeypatch.setenv("SIGHTGLASS_REPO_ROOT", str(repo))
+        monkeypatch.delenv("SIGHTGLASS_LLM_CONFIG", raising=False)
+        get_settings.cache_clear()
+        return data
+
+    def test_the_live_config_is_not_the_packaged_one(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from core.config import get_settings
+        from core.llm.router import active_config_path
+
+        self._env(tmp_path, monkeypatch, {"enabled": False}, None)
+        active = active_config_path()
+        assert (tmp_path / "repo") not in active.parents
+        assert (tmp_path / "data") in active.parents
+        get_settings.cache_clear()
+
+    def test_an_operator_edit_is_never_clobbered_by_reseeding(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from core.config import get_settings
+        from core.llm.router import ensure_runtime_config
+
+        self._env(
+            tmp_path,
+            monkeypatch,
+            {"providers": {"local": {"kind": "ollama", "model": "shipped"}}, "roles": {}},
+            {"providers": {"local": {"kind": "ollama", "model": "operator-choice"}}, "roles": {}},
+        )
+        merged = yaml.safe_load(ensure_runtime_config().read_text(encoding="utf-8"))
+        assert merged["providers"]["local"]["model"] == "operator-choice"
+        get_settings.cache_clear()
+
+    def test_a_role_added_by_an_upgrade_reaches_an_existing_deployment(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without a back-fill, a release that adds a role ships a feature no
+        existing deployment can reach, and the only symptom is "no provider is
+        routed to 'investigate'" on a version where it is supposed to work."""
+        from core.config import get_settings
+        from core.llm.router import ensure_runtime_config
+
+        self._env(
+            tmp_path,
+            monkeypatch,
+            {
+                "providers": {"local": {"kind": "ollama", "model": "m"}},
+                "roles": {"triage": "local", "investigate": "local"},
+            },
+            {
+                "providers": {"local": {"kind": "ollama", "model": "operator-choice"}},
+                "roles": {"triage": "local"},
+            },
+        )
+        merged = yaml.safe_load(ensure_runtime_config().read_text(encoding="utf-8"))
+        assert merged["roles"]["investigate"] == "local"
+        assert merged["providers"]["local"]["model"] == "operator-choice"
+        get_settings.cache_clear()
+
+    def test_a_new_role_naming_an_unknown_provider_is_skipped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Writing it would make the whole config fail to load — a far worse
+        upgrade than a missing role."""
+        from core.config import get_settings
+        from core.llm.router import ensure_runtime_config
+
+        self._env(
+            tmp_path,
+            monkeypatch,
+            {"roles": {"investigate": "a-provider-they-renamed"}},
+            {"providers": {"mine": {"kind": "ollama", "model": "m"}}, "roles": {}},
+        )
+        merged = yaml.safe_load(ensure_runtime_config().read_text(encoding="utf-8"))
+        assert "investigate" not in (merged.get("roles") or {})
+        get_settings.cache_clear()
