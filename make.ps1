@@ -62,9 +62,11 @@ $Targets = [ordered]@{
     'logs'             = { Invoke-Docker ($ComposeDev + @('logs', '-f')) }
 
     'images'           = { & $PSCommandPath 'image-hello'; & $PSCommandPath 'image-static'; & $PSCommandPath 'image-unpack' }
-    'image-hello'      = { Invoke-Docker @('build', '-t', 'sightglass/hello:dev', 'sandbox/images/hello') }
-    'image-static'     = { Invoke-Docker @('build', '-f', 'sandbox/images/static/Dockerfile', '-t', 'sightglass/static:dev', '.') }
-    'image-unpack'     = { Invoke-Docker @('build', '-f', 'sandbox/images/unpack/Dockerfile', '-t', 'sightglass/unpack:dev', '.') }
+    # Delegated to Compose so each analyzer's build context and dockerfile are
+    # defined in docker-compose.yml only. `docker compose up` builds all three.
+    'image-hello'      = { Invoke-Docker @('compose', 'build', 'analyzer-hello') }
+    'image-static'     = { Invoke-Docker @('compose', 'build', 'analyzer-static') }
+    'image-unpack'     = { Invoke-Docker @('compose', 'build', 'analyzer-unpack') }
     'refresh-digests'  = {
         foreach ($image in @('python:3.12-slim-bookworm')) {
             Invoke-Docker @('pull', '-q', $image)

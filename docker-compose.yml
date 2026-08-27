@@ -101,6 +101,51 @@ services:
       "
     restart: "no"
 
+  # --- analyzer images -------------------------------------------------------
+  #
+  # These three build an image and exit. They are not services in any useful
+  # sense; they are here so that ONE `docker compose up` builds everything the
+  # stack needs, including the images the worker spawns as siblings through the
+  # Docker socket rather than the ones Compose runs itself.
+  #
+  # It works because Compose builds every image in the project before it starts
+  # any container. By the time the worker is up, the analyzer tags are in the
+  # daemon. The `service_completed_successfully` edges on the worker exist for
+  # the narrower case of `docker compose up -d worker`, which would otherwise
+  # start a worker with nothing to spawn.
+  #
+  # Without this, a fresh clone came up entirely healthy and then failed its
+  # first scan with START_FAILED. `sightglass/*:dev` are local-only tags, so the
+  # daemon's implicit pull goes to Docker Hub and finds nothing there. The
+  # failure surfaced at scan time, not at boot, which is the worst place for it.
+  #
+  # `make images` and CI build these same services, so the build context and
+  # dockerfile for each analyzer are defined here and nowhere else.
+  analyzer-hello:
+    build:
+      context: sandbox/images/hello
+    image: sightglass/hello:dev
+    # The image's own ENTRYPOINT is the analyzer. Nothing should analyze
+    # anything here — this container exists only to make the build happen.
+    entrypoint: ["/bin/true"]
+    restart: "no"
+
+  analyzer-static:
+    build:
+      context: .
+      dockerfile: sandbox/images/static/Dockerfile
+    image: sightglass/static:dev
+    entrypoint: ["/bin/true"]
+    restart: "no"
+
+  analyzer-unpack:
+    build:
+      context: .
+      dockerfile: sandbox/images/unpack/Dockerfile
+    image: sightglass/unpack:dev
+    entrypoint: ["/bin/true"]
+    restart: "no"
+
   api:
     build:
       context: .
@@ -164,6 +209,16 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+      # Not for ordering — Compose has already built these by the time any
+      # container starts. This is so `docker compose up -d worker` drags the
+      # analyzer builds in with it instead of starting a worker that has
+      # nothing to spawn.
+      analyzer-hello:
+        condition: service_completed_successfully
+      analyzer-static:
+        condition: service_completed_successfully
+      analyzer-unpack:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   # Slow lane. Separate service so a wedged Ghidra job cannot starve the fast

@@ -104,12 +104,18 @@ New-Item -ItemType Directory -Force -Path C:\sightglass\runs
 make images
 ```
 
-This builds two analyzer images:
+This builds three analyzer images:
 
 - `sightglass/hello:dev` — the reference analyzer and isolation probe
 - `sightglass/static:dev` — string extraction, rule matching, entropy, file ID
+- `sightglass/unpack:dev` — recursive container extraction
 
-Both are built from a digest-pinned Python base. The static analyzer installs
+You can skip this step: they are Compose services (ADR-0028), so `make dev`
+below builds them along with everything else. Run it on its own when you want
+the build cost paid up front, or want to rebuild one analyzer in isolation with
+`make image-static`.
+
+All three are built from a digest-pinned Python base. The static analyzer installs
 exactly one third-party package (PyYAML); a sandboxed scanner has no business
 carrying an ORM.
 

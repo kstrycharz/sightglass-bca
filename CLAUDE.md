@@ -55,9 +55,11 @@ Deployment is two commands and no file editing — the dashboard's first-run
 wizard mints the API token and optionally connects a model:
 
 ```bash
-docker compose build
-docker compose up -d          # then open http://localhost:3000
+docker compose up --build -d   # then open http://localhost:3000
 ```
+
+That builds the analyzer images too — they are Compose services that build and
+exit, rather than something `make images` has to be remembered for (ADR-0028).
 
 ```bash
 # as a release gate
@@ -136,6 +138,7 @@ Append-only; supersede rather than edit.
 - **ADR-0025** — A run is claimed with a conditional UPDATE, committed immediately (2026-08-25)
 - **ADR-0026** — Response models are constructed, not validated from ORM objects (2026-08-25)
 - **ADR-0027** — LiteLLM is the transport; the air gap is enforced above it (2026-08-26)
+- **ADR-0028** — Analyzer images are Compose services, built by `docker compose up` (2026-08-27)
 
 ---
 

@@ -144,6 +144,9 @@ Requires Docker. That's it — no `.env` to hand-fill, no token to mint first.
 docker compose up --build -d
 ```
 
+That builds everything, analyzer images included — there is no separate image
+step to remember before the first scan.
+
 Open <http://localhost:3000>. A fresh deployment has no API token yet, so the
 dashboard opens on a one-time setup wizard: click through it, and it mints the
 first admin token and saves it for the dashboard itself — no restart, no `.env`

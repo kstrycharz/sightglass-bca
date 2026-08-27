@@ -498,3 +498,92 @@ configuration, which is further from the code that makes the guarantee.
 **Patch LiteLLM's HTTP handlers at import.** Enforcement by monkey-patching a
 dependency's internals is enforcement that breaks silently on upgrade, which is
 the specific failure mode this decision exists to avoid.
+
+---
+
+## ADR-0028 — Analyzer images are Compose services, built by `docker compose up`
+
+**Date:** 2026-08-27
+**Status:** Accepted
+
+### Context
+
+The stack has two kinds of image. Compose ran four of them (the shared backend
+image, the dashboard) and knew nothing about the other three — `sightglass/hello:dev`,
+`sightglass/static:dev`, `sightglass/unpack:dev` — because those are never run
+by Compose. The worker spawns them as siblings through the Docker socket, so
+they were built out of band by `make images`.
+
+That split produced a bad failure. A fresh clone following the README's
+`docker compose up --build -d` came up entirely healthy: every service passed
+its healthcheck, `/readyz` was green, the dashboard's setup wizard minted a
+token. The first scan then failed in the worker with `START_FAILED`, because
+`sightglass/static:dev` did not exist. `DockerDriver` goes straight to
+`containers.create` and never builds or pulls, and the tags are local-only, so
+the daemon's implicit pull went to Docker Hub and found nothing.
+
+The failure surfaced at scan time, not boot time, and named a Docker Hub lookup
+rather than a missing build step. `docs/SETUP.md` had the correct sequence
+(`make images` before `make dev`); the README quickstart and CLAUDE.md §2 both
+claimed a working deployment in two commands that did not include it.
+
+### Decision
+
+Each analyzer image gets a Compose service that builds it and exits:
+
+```yaml
+  analyzer-static:
+    build: {context: ., dockerfile: sandbox/images/static/Dockerfile}
+    image: sightglass/static:dev
+    entrypoint: ["/bin/true"]
+    restart: "no"
+```
+
+They are not services in any useful sense — the `entrypoint` override exists
+purely to stop the image's real ENTRYPOINT, an analyzer, from running. The
+mechanism that matters is that Compose builds every image in the project before
+it starts any container, so one `docker compose up` now produces the analyzer
+tags as a side effect of coming up at all.
+
+`worker` additionally declares `service_completed_successfully` on all three.
+This is not for ordering, which the build phase already guarantees; it covers
+`docker compose up -d worker`, which would otherwise start a worker with
+nothing to spawn.
+
+`make images`, `make image-*`, and the CI sandbox job now delegate to
+`docker compose build <service>`, so each analyzer's build context and
+dockerfile are defined in `docker-compose.yml` and nowhere else. Three copies
+of a build invocation was how the `unpack` image came to be missing from
+`docs/SETUP.md`'s list in the first place.
+
+### Consequences
+
+The two-command deployment claim is now true from a clean clone. `docker compose ps`
+gains three services in `exited (0)`, which reads as noise until you know what
+they are — hence the comment block above them in the compose file.
+
+`docker compose up` rebuilds an analyzer image only when it is absent; it does
+not notice that `core/rules/` changed. That is the same behaviour as before for
+everyone who ran `make images` once, but it now looks like Compose's
+responsibility. `make dev` passes `--build`, and CI builds explicitly, so the
+paths that need freshness have it.
+
+### Alternatives rejected
+
+**`profiles:` on the analyzer services.** Exactly backwards: a profiled service
+is excluded from the default `up`, so its image would not be built either. It
+solves the "don't run them" half at the cost of the half that matters.
+
+**`deploy.replicas: 0`.** Would avoid the exited containers, but whether the
+build phase still covers a service scaled to zero is an implementation detail of
+Compose rather than a documented guarantee. A one-shot `/bin/true` is ugly and
+certain; this is elegant and conditional on behaviour nobody promised.
+
+**Have `DockerDriver` build a missing image on demand.** Gives the analyzer
+path a build context and a writable Docker socket dependency at scan time, and
+turns a deterministic boot-time cost into a first-scan latency spike. The
+driver's job is to run a container under a boundary, not to produce images.
+
+**Leave it and fix the documentation.** The correct sequence was already
+documented in one place and wrong in two others. A deployment step that is only
+discoverable by reading the right file is the failure this removes.

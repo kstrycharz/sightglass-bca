@@ -56,20 +56,24 @@ shell: ## Open a shell in the API container
 
 # --- analyzer images --------------------------------------------------------
 
+# `docker compose up` already builds all three; these targets are for building
+# one in isolation. They delegate so the build context and dockerfile for each
+# analyzer live in docker-compose.yml and nowhere else.
+
 .PHONY: images
 images: image-hello image-static image-unpack ## Build every analyzer image
 
 .PHONY: image-hello
 image-hello: ## Build the reference analyzer / isolation probe image
-	docker build -t sightglass/hello:dev sandbox/images/hello
+	$(COMPOSE) build analyzer-hello
 
 .PHONY: image-static
 image-static: ## Build the static scan analyzer (strings, rules, entropy)
-	docker build -f sandbox/images/static/Dockerfile -t sightglass/static:dev .
+	$(COMPOSE) build analyzer-static
 
 .PHONY: image-unpack
 image-unpack: ## Build the recursive unpack analyzer
-	docker build -f sandbox/images/unpack/Dockerfile -t sightglass/unpack:dev .
+	$(COMPOSE) build analyzer-unpack
 
 .PHONY: refresh-digests
 refresh-digests: ## Print current digests for the pinned base images
