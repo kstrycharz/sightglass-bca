@@ -11,10 +11,18 @@ because the device has no other way to bootstrap. An installer bundles a
 `config.default.json` with a real staging token in it.
 
 Sightglass takes the installers, executables, firmware images, and update
-bundles you are about to release, unpacks them inside disposable sandboxes,
-reverse engineers them with standard open-source tooling, and reports on
-**secrets exposure, sensitive data leakage, and unintended IP disclosure**
-before the artifact reaches a customer.
+bundles you are about to release, unpacks them inside disposable sandboxes, and
+reverse engineers them with standard open-source tooling to answer two
+questions about the thing you are actually shipping:
+
+**What does it leak?** Secrets exposure, sensitive data, and unintended IP
+disclosure — credentials baked into strings tables, internal hostnames, build
+paths naming your directory tree and your developers.
+
+**What is it made of?** Binary composition analysis: the third-party components
+bundled inside, identified by Package URL and emitted as a CycloneDX SBOM. A
+release record that says what leaked but not what is in the box is half a
+document.
 
 It is self-hosted and air-gap capable. Your artifacts do not leave your network.
 
@@ -31,9 +39,11 @@ environment.
   circumvent DRM.
 - It never produces exploits or weaponised output. Findings describe exposure
   and remediation.
-- Every upload requires an authorization attestation: you own the artifact, or
-  you are contractually authorized to test it. That attestation is recorded in
-  the audit log and stamped into every report.
+- Uploads carry an authorization attestation — you own the artifact, or you are
+  contractually authorized to test it — which is recorded in the audit log and
+  stamped into every report. Enforcement is a setting
+  (`SIGHTGLASS_REQUIRE_ATTESTATION`), shipped **off** so evaluating the tool has
+  no friction. Turn it on before anyone analyses an artifact they did not build.
 
 See [SECURITY.md](SECURITY.md) for the third-party-artifact (due diligence)
 case.
@@ -43,19 +53,26 @@ case.
 This is the design constraint everything else defers to.
 
 **Every finding is produced by a deterministic rule.** Same artifact, same rule
-pack, same tool versions ⇒ byte-identical findings, enforced by a CI test that
-runs the corpus twice and diffs the output. Every run records a manifest —
-artifact hash, rule-pack hash, analyzer image digests, tool versions — and the
-report prints it. Finding IDs are content-derived, so they are stable across
-re-runs and comparable across releases.
+pack, same tool versions ⇒ byte-identical findings. Sort orders are explicit
+throughout and the static analyzer's parallelism cannot affect its output.
+Finding IDs are derived from content rather than from a sequence number, so
+they are stable across re-runs and directly comparable across releases — which
+is what lets the release gate ask "what is new since the last one?" and get a
+set difference rather than a guess.
+
+Every run records a manifest: artifact hash, rule-pack version and hash,
+analyzer image digests, and tool versions. Two runs sharing a fingerprint must
+produce identical findings, and the report prints it so you can check.
 
 **The whole pipeline runs with `--no-llm` and still produces a complete,
 useful report.** That is the CI default. If your model is down, your release
 gate still works.
 
 **The LLM sits strictly on top.** It triages (collapsing the false positives
-that make binary secret scanning unusable), explains, suggests remediation, and
-can run a bounded, fully-cited deep investigation. It cannot invent a finding
+that make binary secret scanning unusable), explains a finding in depth,
+summarises a run, and can run a bounded, fully-cited investigation with
+read-only tools. The remediation shown on a finding comes from the rule pack,
+not from a model. It cannot invent a finding
 that no rule anchored, and it cannot change a finding's severity, offsets, or
 locations. The UI attributes every AI-derived field and has a
 "deterministic view only" toggle. You can always answer *"would this finding
@@ -73,6 +90,25 @@ a per-request check — LiteLLM has no single interceptable choke point, so a
 guarantee made at the HTTP call would hold for some vendors and silently not
 for others. See ADR-0027.
 
+## Binary composition analysis
+
+Sightglass reads the bill of materials out of the artifact itself, not out of a
+lockfile that may not describe what actually shipped:
+
+- **Bundled package manifests** — `package.json`, Python `.dist-info/METADATA`,
+  and `.nuspec` files that survived into the build.
+- **Go build info**, read from the binary's own embedded module table. A Go
+  executable carries its dependency graph whether or not anyone meant it to.
+
+Components are identified by [Package URL](https://github.com/package-url/purl-spec)
+across npm, NuGet, PyPI, Go, Cargo, Maven, and RubyGems, and the result is
+served as CycloneDX 1.5 from `GET /api/runs/{id}/sbom`.
+
+**What it does not do**, so the SBOM is not read as more than it is: it finds
+what the artifact *declares*. A statically-linked C library with no manifest and
+no build info leaves no trace for it to find, and a zero-component result means
+"nothing declared itself", not "nothing is bundled".
+
 ## Status
 
 **Ingest and static analysis are complete, and so is the release gate.** Upload
@@ -85,8 +121,10 @@ The optional AI layer triages findings, explains one in depth, investigates one
 agentically with read-only tools, and summarises a run. All of it is advisory
 and none of it is required.
 
-Not yet built: Ghidra cross-references and dynamic analysis, PDF and CycloneDX
-reporting, and MCP servers.
+Reports come out as SARIF (for code scanning), PDF (for the release record),
+CycloneDX (for the SBOM), and JSON.
+
+Not yet built: Ghidra cross-references, dynamic analysis, and MCP servers.
 
 You can verify the isolation boundary yourself — it reports what the analyzer
 observed from *inside* its own container, which is the only measurement that

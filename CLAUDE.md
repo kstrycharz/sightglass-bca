@@ -92,14 +92,15 @@ make install && make sandbox-check     # ./make.ps1 on Windows
 - CI runs lint, mypy strict, unit tests, the isolation suite, a gitleaks scan,
   the web build, and a stack-boots check.
 
-Verified: 536 unit tests, 19 integration tests, `mypy --strict` clean on
+Verified: 573 unit tests, 19 integration tests, `mypy --strict` clean on
 `core/`, `ruff` clean, `next build` clean.
 
-Not yet started: Ghidra and dynamic analysis (M5), MCP servers (M5), the
-`remediate` role, and a Bedrock adapter (SigV4, unlike every other provider).
+Not yet started: Ghidra and dynamic analysis (M5), MCP servers (M5), and the
+`remediate` role.
 
-**Next milestone: M4 — reporting (PDF, CycloneDX) on top of the SARIF and
-gate work already landed.**
+**Next milestone: M5 — Ghidra cross-references and dynamic analysis. Reporting
+(SARIF, PDF, CycloneDX) has landed; see `/api/runs/{id}/report.pdf` and
+`/sbom`.**
 
 ---
 
@@ -149,26 +150,26 @@ anything durable to [docs/ADR.md](docs/ADR.md).
 
 ## 5. Next steps
 
-The gate is landed but not yet deployable to a hostile network, and that is the
-gap that matters most.
+The gate, authentication, and reporting have all landed. What is left is
+mostly about the tool being *lived with* rather than demonstrated.
 
-1. **API authentication.** `sightglass scan --token` already sends a bearer
-   token; nothing verifies it. Until it does, the deployment must sit inside a
-   perimeter — and a release gate that anyone on the network can query, or
-   whose verdict anyone can request, is not a control. Highest priority.
-2. **Gate the gate in this repo's own CI.** Sightglass should scan its own
+1. **Gate the gate in this repo's own CI.** Sightglass should scan its own
    built artifacts on every release tag. Dogfooding is the fastest way to find
-   out which parts of `docs/CICD.md` are wrong.
-3. **A `sightglass gate` subcommand** for re-evaluating an existing run under a
-   changed policy without re-uploading. The API supports it (that is why the
-   verdict is a separate call from the scan, ADR-0015); only the CLI verb is
-   missing.
-4. **Waiver ergonomics.** The CI output prints finding ids; there is no
+   out which parts of `docs/CICD.md` are wrong, and it is the one claim in the
+   README that nothing currently verifies.
+2. **Waiver ergonomics.** The CI output prints finding ids; there is no
    `sightglass waive <id> --reason ... --expires ...` to append a well-formed
    entry. Hand-editing YAML under time pressure is where waivers acquire
    missing owners and absent expiries.
-5. **M4 reporting proper.** PDF for the release record and CycloneDX for the
-   SBOM story. SARIF is done and is what feeds code scanning.
+3. **Plaintext retention needs its TTL.** §9 promises encryption at rest, a
+   TTL, and auto-purge. None of the three exists, so a run scanned with
+   retention on leaves real secrets in Postgres indefinitely. The UI says so at
+   the point of choosing, which is not the same as the promise being kept.
+4. **The Go string-blob problem** (§6). It affects every rule on every Go
+   binary and needs a Go-aware splitter, not a per-rule patch.
+5. **Decide about `remediate`.** It is routable and described in the settings
+   UI as unwired. Either wire it or drop it from `EDITABLE_ROLES`; leaving a
+   configurable role that does nothing is how the explain/summarize gap started.
 
 Then: the run-comparison view in the dashboard, which is the same baseline
 computation the gate already does, surfaced for a human rather than a pipeline.
