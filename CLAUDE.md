@@ -140,6 +140,7 @@ Append-only; supersede rather than edit.
 - **ADR-0027** — LiteLLM is the transport; the air gap is enforced above it (2026-08-26)
 - **ADR-0028** — Analyzer images are Compose services, built by `docker compose up` (2026-08-27)
 - **ADR-0029** — The API is the only migrator, and everything else waits for it (2026-08-27)
+- **ADR-0030** — The packaged LLM config ships inert (2026-08-27)
 
 ---
 

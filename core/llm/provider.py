@@ -28,6 +28,12 @@ log = structlog.get_logger(__name__)
 
 DEFAULT_TIMEOUT_S = 120
 
+# Health probes are a UI interaction, not a scan: the settings page waits on
+# every provider before it renders. A reachable endpoint answers in
+# milliseconds, so the only thing a long timeout buys is a longer stare at a
+# spinner when one is unreachable.
+HEALTH_TIMEOUT_S = 5.0
+
 
 class EgressBlocked(RuntimeError):  # noqa: N818 - names the action, not an error type
     """A call was attempted to a host the egress policy does not permit."""
@@ -207,7 +213,14 @@ class LLMProvider(abc.ABC):
     def capabilities(self) -> Capabilities: ...
 
     @abc.abstractmethod
-    def health(self) -> ProviderHealth: ...
+    def health(self, *, timeout_s: float = HEALTH_TIMEOUT_S) -> ProviderHealth:
+        """Probe reachability.
+
+        Bounded because the settings page probes every provider on load, and an
+        endpoint that is merely *gone* — a host that no longer answers, a LAN
+        address off the network — black-holes the connection rather than
+        refusing it. The wait is then the caller's timeout, per provider.
+        """
 
     @property
     @abc.abstractmethod

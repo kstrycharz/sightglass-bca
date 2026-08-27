@@ -307,7 +307,13 @@ explanations; unusable for 5,000 triages.
 ollama pull qwen2.5-coder:14b-instruct-q4_K_M
 ```
 
-Edit `config/llm.yaml` and point `base_url` at your Ollama host:
+The dashboard's Settings page is the shortest route: it probes the endpoint
+before saving, and it writes the runtime config for you.
+
+By hand, edit the **runtime** config — `data/llm.yaml` in the backend data
+volume, not `config/llm.yaml`. The latter is the packaged default that seeds it
+on first use, and it ships disabled and empty on purpose so that no deployment
+starts out reaching for a host somebody else configured:
 
 ```yaml
 enabled: true
@@ -319,7 +325,7 @@ roles:
 providers:
   local-fast:
     kind: ollama
-    base_url: http://192.168.1.49:11434   # ← your host
+    base_url: http://10.0.0.5:11434   # ← your Ollama host
     model: qwen2.5-coder:14b-instruct-q4_K_M
     num_ctx: 8192
 

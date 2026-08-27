@@ -10,6 +10,7 @@ from api.schemas.models import LlmSettingsOut, ProviderHealthOut
 from core.auth import Scope
 from core.config import EgressPolicy
 from core.llm import LLMConfigError, build_provider, load_config
+from core.llm.router import health_check_all
 from core.llm.settings_writer import LlmUpdate, apply_update
 from core.rules import load_rule_pack
 
@@ -34,24 +35,31 @@ def get_llm_settings() -> LlmSettingsOut:
         # the whole point of validating at load (§8.2).
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, str(exc)) from None
 
+    # Concurrently: the page blocks on every provider, and these are pure
+    # network waits. Probed serially, two unreachable hosts cost the sum of
+    # their timeouts before anything renders.
+    health_by_name = health_check_all(config)
+
     providers: list[ProviderHealthOut] = []
     for name in sorted(config.providers):
+        health = health_by_name[name]
         try:
-            provider = build_provider(config, name)
-            health = provider.health()
-            providers.append(
-                ProviderHealthOut(
-                    name=name,
-                    healthy=health.healthy,
-                    model=health.model,
-                    detail=health.detail,
-                    latency_s=health.latency_s,
-                    is_local=provider.is_local,
-                    available_models=list(health.available_models),
-                )
+            is_local = build_provider(config, name).is_local
+        except Exception:
+            # Already reported as unhealthy by the probe; locality is unknown
+            # for a provider that cannot be constructed.
+            is_local = False
+        providers.append(
+            ProviderHealthOut(
+                name=name,
+                healthy=health.healthy,
+                model=health.model,
+                detail=health.detail,
+                latency_s=health.latency_s,
+                is_local=is_local,
+                available_models=list(health.available_models),
             )
-        except Exception as exc:
-            providers.append(ProviderHealthOut(name=name, healthy=False, detail=str(exc)[:300]))
+        )
 
     return LlmSettingsOut(
         enabled=config.enabled,

@@ -21,6 +21,7 @@ import structlog
 
 from core.llm.provider import (
     DEFAULT_TIMEOUT_S,
+    HEALTH_TIMEOUT_S,
     Capabilities,
     Completion,
     EgressPolicyGuard,
@@ -142,7 +143,7 @@ class OllamaProvider(LLMProvider):
         )
         return self._capabilities
 
-    def health(self) -> ProviderHealth:
+    def health(self, *, timeout_s: float = HEALTH_TIMEOUT_S) -> ProviderHealth:
         import httpx
 
         try:
@@ -152,7 +153,7 @@ class OllamaProvider(LLMProvider):
 
         try:
             started = timed()
-            response = httpx.get(f"{self.base_url}/api/tags", timeout=15)
+            response = httpx.get(f"{self.base_url}/api/tags", timeout=timeout_s)
             response.raise_for_status()
             models = tuple(m["name"] for m in response.json().get("models", []))
             latency = timed() - started

@@ -33,6 +33,7 @@ import structlog
 
 from core.llm.provider import (
     DEFAULT_TIMEOUT_S,
+    HEALTH_TIMEOUT_S,
     Capabilities,
     Completion,
     EgressPolicyGuard,
@@ -194,7 +195,7 @@ class LiteLLMProvider(LLMProvider):
             max_output_tokens=max_output,
         )
 
-    def health(self) -> ProviderHealth:
+    def health(self, *, timeout_s: float = HEALTH_TIMEOUT_S) -> ProviderHealth:
         """Probe with a real one-token completion.
 
         There is no uniform "list models" across LiteLLM's providers, and a
@@ -221,7 +222,7 @@ class LiteLLMProvider(LLMProvider):
             litellm.completion(
                 messages=[{"role": "user", "content": "ok"}],
                 max_tokens=1,
-                timeout=30,
+                timeout=timeout_s,
                 **self._kwargs(),
             )
             latency = timed() - started

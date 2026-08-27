@@ -4,11 +4,25 @@
 # produces a complete, valid report. That is the CI default (§2.5). Nothing
 # here is required for Sightglass to work — it makes findings easier to act on,
 # it does not make them exist.
+#
+# THIS FILE SHIPS DISABLED AND EMPTY, ON PURPOSE.
+#
+# It is the *packaged default*: on first use it seeds the runtime copy in the
+# data volume (see `router.ensure_runtime_config`), and everything afterwards —
+# the setup wizard, the settings page — writes there, not here. A provider
+# committed here is therefore not a helpful example; it is a host that every
+# deployment in the world tries to reach on first boot. Configure a provider
+# from the dashboard, or edit the runtime copy.
 
-enabled: true
+enabled: false
 
 # ---------------------------------------------------------------------------
 # Role routing. This is where the money and the wall-clock time are.
+#
+# The setup wizard writes both `roles:` and `providers:` when you add a
+# provider, so neither needs to exist here. What follows is the reasoning
+# behind the defaults it picks, which is worth keeping even though the values
+# are not.
 #
 # Triage runs over every candidate — thousands for a large installer — so it
 # needs a small, fast, NON-REASONING model. Explanation runs over the handful
@@ -27,62 +41,64 @@ enabled: true
 # glm-4.7-flash is not a bad model; at 55.8 GB in bf16 it is bandwidth-bound to
 # roughly 6 tokens/sec, and it spends most of them on reasoning before it
 # answers. That is fine for 20 explanations and unusable for 5000 triages.
+#
+# Rule authoring (`discover`) and agentic investigation (`investigate`) are
+# routed to the FAST model despite being judgement work. A reasoning model
+# spends the same token budget on thinking that it needs for the answer: at
+# ~6 tok/s glm-4.7-flash consumed 2000 tokens deliberating and returned
+# nothing, and a twelve-step investigation multiplies that by twelve. Measured,
+# not assumed.
+#
+# roles:
+#   triage: local-fast
+#   discover: local-fast
+#   explain: local-reasoning
+#   investigate: local-fast
+#   remediate: local-reasoning
+#   summarize: local-reasoning
 # ---------------------------------------------------------------------------
-roles:
-  triage: local-fast
-  # Rule authoring: one call per run over a few hundred unmatched strings.
-  #
-  # Routed to the FAST model, despite being judgement work. A reasoning model
-  # spends the same token budget on thinking that it needs for the answer, so
-  # at ~6 tok/s glm-4.7-flash consumed 2000 tokens deliberating and returned
-  # nothing; giving it room would mean a 15-minute call. The 14b emits the
-  # JSON directly. Measured, not assumed.
-  discover: local-fast
-  explain: local-reasoning
-  # Agentic investigation: a loop of calls, each carrying the transcript so
-  # far. Routed to the FAST model by default despite being judgement work —
-  # a reasoning model spends its budget deliberating on every turn, and a
-  # twelve-step loop multiplies that by twelve.
-  investigate: local-fast
-  remediate: local-reasoning
-  summarize: local-reasoning
 
-providers:
-  local-fast:
-    kind: ollama
-    base_url: http://192.168.1.49:11434
-    model: qwen2.5-coder:14b-instruct-q4_K_M
-    num_ctx: 8192
-
-  local-reasoning:
-    kind: ollama
-    base_url: http://192.168.1.49:11434
-    model: glm-4.7-flash:q4_K_M
-    # Reasoning models emit a separate `thinking` stream before answering. Give
-    # them room: a budget sized for the answer alone returns an empty response.
-    num_ctx: 16384
-
-  # Cloud providers go through LiteLLM: the `model` string carries the
-  # provider prefix it routes on, and no per-vendor adapter is involved. Add
-  # one from the dashboard's Settings page, which stores the key outside this
-  # file, or by hand as below.
-  #
-  # `is_local: false` is what the egress policy keys off. Most LiteLLM
-  # providers carry no base_url — LiteLLM resolves the endpoint itself — so
-  # locality cannot be re-derived from a URL, and an undeclared provider is
-  # treated as hosted. With `egress: deny` below, enabling one fails at config
-  # load rather than mid-scan.
-  #
-  # frontier:
-  #   kind: anthropic
-  #   model: anthropic/claude-sonnet-4-5-20250929
-  #   is_local: false
-  #   api_key_env: ANTHROPIC_API_KEY
+# ---------------------------------------------------------------------------
+# Providers. Add one from the dashboard's Settings page — it stores API keys
+# outside this file and probes the endpoint before saving it.
+#
+# By hand, the local shape is:
+#
+# providers:
+#   local-fast:
+#     kind: ollama
+#     base_url: http://localhost:11434   # your Ollama host
+#     model: qwen2.5-coder:14b-instruct-q4_K_M
+#     num_ctx: 8192
+#
+#   local-reasoning:
+#     kind: ollama
+#     base_url: http://localhost:11434
+#     model: glm-4.7-flash:q4_K_M
+#     # Reasoning models emit a separate `thinking` stream before answering.
+#     # Give them room: a budget sized for the answer alone returns empty.
+#     num_ctx: 16384
+#
+# Cloud providers go through LiteLLM: the `model` string carries the provider
+# prefix it routes on, and no per-vendor adapter is involved.
+#
+# `is_local: false` is what the egress policy keys off. Most LiteLLM providers
+# carry no base_url — LiteLLM resolves the endpoint itself — so locality cannot
+# be re-derived from a URL, and an undeclared provider is treated as hosted.
+# With `egress: deny` below, enabling one fails at config load rather than
+# mid-scan.
+#
+#   frontier:
+#     kind: anthropic
+#     model: anthropic/claude-sonnet-4-5-20250929
+#     is_local: false
+#     api_key_env: ANTHROPIC_API_KEY
+# ---------------------------------------------------------------------------
 
 policy:
   # deny = no outbound calls to anything that is not loopback or a private
   # address. An Ollama box on your own LAN is not egress in any sense a
-  # security team cares about, so 192.168.x.x is permitted under deny.
+  # security team cares about, so a private address is permitted under deny.
   egress: deny
 
   # strict = candidate secrets are sent as shape, entropy, rule name, masked

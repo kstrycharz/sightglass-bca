@@ -11,6 +11,7 @@ Config lives in ``config/llm.yaml`` and is hot-reloadable.
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,10 @@ from core.llm.provider import EgressPolicyGuard, LLMProvider, ProviderHealth
 log = structlog.get_logger(__name__)
 
 DEFAULT_CONFIG_PATH = Path("config/llm.yaml")
+
+# Providers are few and the work is entirely network wait, so this only
+# needs to be large enough that nobody queues behind anybody else.
+_MAX_PROBE_WORKERS = 8
 ROLES = ("triage", "explain", "remediate", "summarize", "investigate")
 
 
@@ -272,13 +277,31 @@ def provider_for_role(role: str, config: LLMConfig | None = None) -> LLMProvider
     return build_provider(config, config.provider_for(role))
 
 
+def probe_provider(config: LLMConfig, name: str) -> ProviderHealth:
+    """Probe one provider, turning any failure into an unhealthy result.
+
+    A provider that cannot even be *built* — an unknown kind, a malformed spec
+    — is as unhealthy as one that will not answer, and the settings page needs
+    to render either way.
+    """
+    try:
+        return build_provider(config, name).health()
+    except Exception as exc:
+        return ProviderHealth(healthy=False, provider=name, detail=str(exc)[:300])
+
+
 def health_check_all(config: LLMConfig | None = None) -> dict[str, ProviderHealth]:
-    """Probe every configured provider. Drives the settings page."""
+    """Probe every configured provider. Drives the settings page.
+
+    Concurrently, because these are independent network waits and the page
+    blocks on all of them. Serially, two unreachable providers cost the sum of
+    their timeouts; the settings page took the better part of a minute to
+    render against hosts that were simply not there.
+    """
     config = config or load_config()
-    results: dict[str, ProviderHealth] = {}
-    for name in config.providers:
-        try:
-            results[name] = build_provider(config, name).health()
-        except Exception as exc:
-            results[name] = ProviderHealth(healthy=False, provider=name, detail=str(exc))
-    return results
+    names = sorted(config.providers)
+    if not names:
+        return {}
+
+    with ThreadPoolExecutor(max_workers=min(len(names), _MAX_PROBE_WORKERS)) as pool:
+        return dict(zip(names, pool.map(lambda n: probe_provider(config, n), names), strict=True))

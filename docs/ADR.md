@@ -705,3 +705,93 @@ rather than at one point where the answer is known.
 **A shell healthcheck using `$HOSTNAME` or `hostname(1)`.** Both assume
 something about the image that is not true or not guaranteed, and the failure
 mode is a healthcheck that reports a healthy worker as unhealthy forever.
+
+---
+
+## ADR-0030 — The packaged LLM config ships inert
+
+**Date:** 2026-08-27
+**Status:** Accepted
+
+### Context
+
+`config/llm.yaml` is not a config file in the usual sense. It is the *packaged
+default*: `router.ensure_runtime_config()` copies it into the data volume on
+first use, and everything afterwards — the setup wizard, the settings page —
+writes to that runtime copy. The packaged file is what every deployment
+inherits before anyone has configured anything.
+
+It shipped with `enabled: true` and two Ollama providers pointing at a
+developer's LAN address. So a clean install of Sightglass, on any network,
+started up believing it had two working models on a machine it had never heard
+of. Opening the settings page probed both, and each probe waited out its
+timeout — 15 seconds, serially, because the endpoint had no listener to refuse
+the connection. The page appeared to hang.
+
+Two independent faults met there. The config leaked one person's network
+topology into every clone of the repository. And the probe path had no bound
+worth the name: `OllamaProvider.health()` hard-coded a 15-second timeout with no
+way for a caller to shorten it, and both `health_check_all()` and the settings
+endpoint looped over providers one at a time.
+
+### Decision
+
+The packaged config ships `enabled: false`, with no `providers:` and no
+`roles:`. The commentary that explains the routing — the measured throughput
+numbers, why `discover` and `investigate` go to the fast model — stays, because
+it is the reasoning behind what the wizard picks and is worth reading. The
+concrete values become commented examples against `localhost`.
+
+Nothing is lost operationally: the setup wizard writes `enabled: true`, the
+provider, and every role when an operator adds one, and `_validate` skips a
+disabled config entirely, so roles naming providers that no longer exist cannot
+break the load.
+
+Probing gets a bound and gets parallelised. `health()` takes a `timeout_s`
+defaulting to `HEALTH_TIMEOUT_S = 5.0` — a health probe is a UI interaction, not
+a scan, and a reachable endpoint answers in milliseconds, so a long timeout only
+buys a longer stare at a spinner. `health_check_all()` runs the probes on a
+thread pool, and the settings endpoint calls it rather than keeping a second,
+serial copy of the same loop.
+
+The dashboard gets `app/settings/loading.tsx`. The page is a dynamic server
+component that awaits every probe before it renders, so even a bounded wait
+showed the browser nothing at all.
+
+### Consequences
+
+A fresh deployment now has no model configured and says so, which is the honest
+state and matches the `--no-llm` default the pipeline is built around (§2.5).
+The cost is one extra step for an operator who previously inherited a working
+config by accident — but that config only worked on one LAN.
+
+Worst-case settings latency drops from the sum of every provider's 15-second
+timeout to roughly one 5-second timeout, behind a skeleton rather than a blank
+page.
+
+Shortening the health timeout to 5s could in principle mark a genuinely slow but
+working provider unhealthy. A `/api/tags` call that takes longer than five
+seconds is a provider that will not survive a triage pass over thousands of
+candidates, so reporting it is closer to right than hiding it.
+
+**The address remains in git history.** Four commits on `main` contain it,
+back to `b144f54`. Stripping the working tree does not remove them, and
+rewriting published history is not something to do as a side effect of a bug
+fix. It is an RFC1918 address, which bounds the disclosure to network topology
+rather than anything reachable — but the decision to rewrite or leave it is the
+repository owner's.
+
+### Alternatives rejected
+
+**Gitignore `config/llm.yaml`.** It is `COPY`'d into the backend image and is
+the seed for every runtime config; an absent file means `ensure_runtime_config`
+seeds nothing and the shipped commentary disappears. The file is not the
+problem — its contents were.
+
+**Keep the providers but point them at `localhost`.** Still ships
+`enabled: true`, so a fresh install still probes on page load and still reports
+two unhealthy providers nobody asked for. Inert beats plausible-but-wrong.
+
+**Cache the probe results.** The page's own text says a stale green tick is
+worse than none, and that is right: "test connection" is the question being
+asked. Making the probe fast is the fix; making it rare is an evasion.
