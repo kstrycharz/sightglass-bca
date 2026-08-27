@@ -58,13 +58,21 @@ tests/corpus/out/
 sightglass-report-*.pdf
 sightglass-report-*.html
 
-# Design-tool exports and agent briefs. Working material for building the UI,
-# not source: `design/` is a 2.3 MB published Claude Design canvas (bundled
-# editor plus content) that nothing imports, and the redesign brief is written
-# to be pasted into an agent rather than read by a contributor. Both are kept
-# locally; neither belongs in a clone.
+# Working material from building this, not source. Kept locally; none of it
+# belongs in a clone.
+#
+#   design/                    a 2.3 MB published Claude Design canvas, bundled
+#                              editor and all, that nothing imports
+#   UI_REDESIGN_BRIEF.md       written to be pasted into an agent, not read by
+#                              a contributor
+#   JOURNAL.md                 a session-by-session account of what was built
+#                              and what broke. Useful to whoever is mid-build;
+#                              not a document a reader of the repo wants. The
+#                              decisions worth keeping are promoted to
+#                              docs/ADR.md, which is written to be read.
 design/
 docs/UI_REDESIGN_BRIEF.md
+docs/JOURNAL.md
 
 # Editors
 .vscode/

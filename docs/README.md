@@ -10,5 +10,4 @@ points:
 
 `CLAUDE.md` is the working document: current status, known issues, and the
 conventions the code is held to. `ADR.md` records architecture decisions with
-their rejected alternatives; `JOURNAL.md` records what was built each session,
-what broke, and why the fix took the shape it did.
+their rejected alternatives.

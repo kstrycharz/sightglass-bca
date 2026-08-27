@@ -3,10 +3,14 @@
 The contract between sessions: current state, open debt, and the rules the code
 is held to. Update at the end of every working session.
 
-Keep it under ~300 lines and readable start to finish. Two things live
-elsewhere for that reason, both append-only and both of which would otherwise
-swallow this file: architecture decisions in [docs/ADR.md](docs/ADR.md), and
-the session-by-session record in [docs/JOURNAL.md](docs/JOURNAL.md).
+Keep it under ~300 lines and readable start to finish. Architecture
+decisions live in [docs/ADR.md](docs/ADR.md) — append-only, and it would
+otherwise swallow this file.
+
+A running `docs/JOURNAL.md` holds the session-by-session account of what was
+built and what broke. It is gitignored: useful while building, not something a
+reader of this repository wants. Anything from it worth keeping is promoted to
+the ADR log.
 
 ---
 
@@ -136,9 +140,10 @@ Append-only; supersede rather than edit.
 
 ## 4. Progress log
 
-Moved to [docs/JOURNAL.md](docs/JOURNAL.md) — what was built each session, what
-broke, and why. Kept out of this file so the instructions below stay findable;
-this document is meant to be read start to finish.
+Kept in `docs/JOURNAL.md`, which is gitignored — what was built each session,
+what broke, and why. Out of this file so the instructions below stay findable,
+and out of the repository because it is build-time working material. Promote
+anything durable to [docs/ADR.md](docs/ADR.md).
 
 ---
 

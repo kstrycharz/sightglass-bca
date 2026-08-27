@@ -61,29 +61,42 @@ locations. The UI attributes every AI-derived field and has a
 "deterministic view only" toggle. You can always answer *"would this finding
 exist without the AI?"*
 
-Bring your own model: Ollama and vLLM locally, or OpenAI, Anthropic, Google,
-Azure, and Bedrock. Egress is denied by default and enforced at the HTTP-client
-layer, not by convention.
+Bring your own model. Ollama runs locally on its own adapter; everything else
+goes through LiteLLM, so OpenAI, Anthropic, Google, Azure, Bedrock, Vertex,
+Groq, Mistral, DeepSeek, and the rest are a dropdown in the setup wizard rather
+than a code change.
+
+Egress is denied by default, and enforced where it cannot be worked around: a
+provider whose endpoint is not local is never constructed under a deny policy,
+and start-up refuses a config that holds one. That is deliberately coarser than
+a per-request check — LiteLLM has no single interceptable choke point, so a
+guarantee made at the HTTP call would hold for some vendors and silently not
+for others. See ADR-0027.
 
 ## Status
 
-**Milestone M0 — foundation.** The sandbox boundary, the deployment stack, and
-CI. Artifact ingestion and static scanning land in M1.
+**Ingest and static analysis are complete, and so is the release gate.** Upload
+an artifact through the dashboard or the CLI, it is unpacked recursively and
+scanned in a locked-down container, and deterministic findings come back with
+byte offsets, encoding, entropy, and remediation. A policy your repository owns
+turns those into a ship / do-not-ship decision with a meaningful exit code.
 
-What works today:
+The optional AI layer triages findings, explains one in depth, investigates one
+agentically with read-only tools, and summarises a run. All of it is advisory
+and none of it is required.
+
+Not yet built: Ghidra cross-references and dynamic analysis, PDF and CycloneDX
+reporting, and MCP servers.
+
+You can verify the isolation boundary yourself — it reports what the analyzer
+observed from *inside* its own container, which is the only measurement that
+proves the profile actually applied:
 
 ```bash
-./make.ps1 sandbox-check     # Windows
-make sandbox-check           # Linux/macOS
+make sandbox-check           # ./make.ps1 sandbox-check on Windows
 ```
 
-That builds the reference analyzer image, runs it through the real driver in a
-locked-down container, and asserts — from *inside* the container — that the
-rootfs is read-only, the input mount is read-only, there is no network, and the
-process is not root.
-
-See [CLAUDE.md](CLAUDE.md) for current status, the architecture decision log,
-and what is next.
+See [CLAUDE.md](CLAUDE.md) for current status, known issues, and what is next.
 
 ## Quick start
 
@@ -182,7 +195,6 @@ Full detail in [ARCHITECTURE.md](ARCHITECTURE.md) and
 | Document | What it covers |
 | --- | --- |
 | [CLAUDE.md](CLAUDE.md) | Current status, known issues, conventions |
-| [docs/JOURNAL.md](docs/JOURNAL.md) | What was built each session, what broke, and why |
 | [docs/ADR.md](docs/ADR.md) | Architecture decision log, with rejected alternatives |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Components, pipeline stages, data model |
 | [docs/CICD.md](docs/CICD.md) | Running Sightglass as a CI/CD release gate |
