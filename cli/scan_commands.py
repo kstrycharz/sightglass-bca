@@ -41,6 +41,11 @@ from core.policy import (
     verdict_from_dict,
 )
 
+# Shared with the API and the `scan --sbom` path so all three emit the same
+# bytes for one run; a hand-rolled json.dumps here would be a third spelling
+# of a document whose whole value is being byte-stable.
+from reporting.cyclonedx import dump_sbom
+
 EXIT_ERROR = 2
 
 policy_app = typer.Typer(help="Release-policy operations.", no_args_is_help=True)
@@ -335,9 +340,11 @@ def _emit_verdict(
         except ApiError as exc:
             _fail(f"could not fetch the SBOM: {exc}")
         sbom.parent.mkdir(parents=True, exist_ok=True)
-        sbom.write_text(
-            json.dumps(document, indent=2, sort_keys=True) + chr(10), encoding="utf-8"
-        )
+        # Not a local json.dumps: this one omitted ensure_ascii=False, so a
+        # component with a non-ASCII name serialised differently here than
+        # through the API — two spellings of a document whose entire value is
+        # being byte-identical across exports.
+        sbom.write_text(dump_sbom(document), encoding="utf-8")
         count = len(document.get("components", []))
         typer.echo(f"wrote {sbom} ({count} component(s))")
 
@@ -520,3 +527,49 @@ def policy_explain() -> None:
     typer.echo("")
     typer.echo("Exit codes: 0 pass, 1 blocked, 2 error, 3 inconclusive.")
     sys.stdout.flush()
+
+
+def sbom(
+    run_id: Annotated[str, typer.Argument(help="The run to export.")],
+    api: Annotated[
+        str, typer.Option(envvar="SIGHTGLASS_API_URL", help="Sightglass API base URL.")
+    ] = "http://localhost:8000",
+    token: Annotated[
+        str,
+        typer.Option(envvar="SIGHTGLASS_TOKEN", help="Bearer token, if the deployment needs one."),
+    ] = "",
+    out: Annotated[
+        Path | None,
+        typer.Option("--out", "-o", help="Write here instead of stdout."),
+    ] = None,
+) -> None:
+    """Export a CycloneDX SBOM for a run that has already been scanned.
+
+    `scan --sbom` writes one as a side effect of scanning. This exists for
+    everything after that: attaching a bill of materials to a release that was
+    built last week, re-exporting after a component detector improves, or
+    diffing two runs. The document is rebuilt from the stored inventory rather
+    than re-scanning, so it is byte-identical to the one the original scan
+    produced and can be hashed.
+
+    Writes to stdout by default so it pipes:
+
+        sightglass sbom RUN_ID | jq '.components | length'
+    """
+    client = SightglassClient(api, token=token)
+    try:
+        document = client.get_sbom(run_id)
+    except ApiError as exc:
+        _fail(f"could not fetch the SBOM: {exc}")
+
+    rendered = dump_sbom(document)
+    if out is None:
+        # `typer.echo` rather than print: the document is already newline
+        # terminated, and Windows consoles need the encoding shim above.
+        typer.echo(rendered, nl=False)
+        return
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(rendered, encoding="utf-8")
+    count = len(document.get("components", []))
+    typer.echo(f"wrote {out} ({count} component(s))")

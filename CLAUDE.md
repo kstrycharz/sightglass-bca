@@ -102,7 +102,7 @@ Not yet started: Ghidra and dynamic analysis (M5), MCP servers (M5), and the
 
 **Next milestone: M5 — Ghidra cross-references and dynamic analysis. Reporting
 (SARIF, PDF, CycloneDX) has landed; see `/api/runs/{id}/report.pdf` and
-`/sbom`.**
+`/sbom`. `sightglass sbom RUN_ID` exports one for any past run.**
 
 ---
 

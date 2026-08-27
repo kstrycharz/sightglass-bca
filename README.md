@@ -102,7 +102,21 @@ lockfile that may not describe what actually shipped:
 
 Components are identified by [Package URL](https://github.com/package-url/purl-spec)
 across npm, NuGet, PyPI, Go, Cargo, Maven, and RubyGems, and the result is
-served as CycloneDX 1.5 from `GET /api/runs/{id}/sbom`.
+served as CycloneDX 1.5 from `GET /api/runs/{id}/sbom`, downloadable from the
+run page, or exported from the CLI:
+
+```bash
+sightglass scan dist/installer.exe --sbom sbom.cdx.json   # during a scan
+sightglass sbom RUN_ID -o sbom.cdx.json                   # any run, later
+sightglass sbom RUN_ID | jq '.components | length'        # stdout by default
+```
+
+Every component carries how it was identified — a `package.json` declaration
+and a version banner scraped from a stripped binary are both useful and are not
+the same fact, so `evidence.identity` records which. The document is derived
+entirely from the stored run: no clock, no random serial, so two exports of one
+run are byte-identical and can be hashed against a release or diffed between
+builds.
 
 **What it does not do**, so the SBOM is not read as more than it is: it finds
 what the artifact *declares*. A statically-linked C library with no manifest and

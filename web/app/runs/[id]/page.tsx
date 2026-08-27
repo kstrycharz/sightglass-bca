@@ -228,6 +228,32 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
             </Panel>
           )}
 
+          <Panel
+            title="Exports"
+            description="Rebuilt from what this run stored, so every export of a run is byte-identical and can be hashed against a release."
+          >
+            <div className="flex flex-wrap gap-2 px-4 py-3">
+              <ExportLink
+                href={`/api/runs/${run.id}/sbom`}
+                filename={`sightglass-${run.id}-sbom.cdx.json`}
+                label="CycloneDX SBOM"
+                detail="What this artifact is made of"
+              />
+              <ExportLink
+                href={`/api/runs/${run.id}/sarif`}
+                filename={`sightglass-${run.id}.sarif`}
+                label="SARIF"
+                detail="For code scanning"
+              />
+              <ExportLink
+                href={`/api/runs/${run.id}/report.pdf`}
+                filename={`sightglass-${run.id}.pdf`}
+                label="PDF record"
+                detail="The release record"
+              />
+            </div>
+          </Panel>
+
           <FindingsExplorer
             runId={run.id}
             initialFindings={findings}
@@ -241,6 +267,39 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
 
 // Next.js page modules may only export a fixed set of names, so shared helpers
 // stay local rather than being re-exported from here.
+
+/**
+ * A download of one of this run's reports.
+ *
+ * A plain anchor rather than a fetch: these go through the dashboard's own API
+ * proxy, so they are same-origin, and `download` is what turns a JSON response
+ * the browser would otherwise render inline into a saved file with a name
+ * worth having. The filename carries the run id because the first thing anyone
+ * does with an exported SBOM is put it next to another one.
+ */
+function ExportLink({
+  href,
+  filename,
+  label,
+  detail,
+}: {
+  href: string;
+  filename: string;
+  label: string;
+  detail: string;
+}) {
+  return (
+    <a
+      href={href}
+      download={filename}
+      className="surface-raised inline-flex flex-col gap-0.5 rounded-md border border-border-strong bg-surface-raised px-3.5 py-2 transition-all hover:border-content-subtle"
+    >
+      <span className="text-[13px] font-medium text-content">{label}</span>
+      <span className="text-[11.5px] text-content-subtle">{detail}</span>
+    </a>
+  );
+}
+
 function ManifestRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-baseline justify-between gap-3">
