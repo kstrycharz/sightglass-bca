@@ -104,16 +104,55 @@ New-Item -ItemType Directory -Force -Path C:\sightglass\runs
 make images
 ```
 
-This builds two analyzer images:
+This builds three analyzer images:
 
 - `sightglass/hello:dev` — the reference analyzer and isolation probe
 - `sightglass/static:dev` — string extraction, rule matching, entropy, file ID
+- `sightglass/unpack:dev` — recursive unpacking of nested containers
 
-Both are built from a digest-pinned Python base. The static analyzer installs
+All are built from a digest-pinned Python base. The static analyzer installs
 exactly one third-party package (PyYAML); a sandboxed scanner has no business
 carrying an ORM.
 
 First build takes a few minutes. Subsequent builds are cached.
+
+### Tagging the images
+
+`dev` is the default and needs no configuration. For anything you deploy rather
+than develop against, set a real tag — `SIGHTGLASS_ANALYZER_TAG` is read by both
+the build and the orchestrator that runs the containers, so the two cannot
+disagree about which image they mean.
+
+```bash
+# Local development (default) — builds and runs :dev
+make images
+
+# Production / remote box
+export SIGHTGLASS_ANALYZER_TAG=latest   # or 0.1.0, or a git sha
+make images
+docker compose up -d
+```
+
+<details>
+<summary>Windows</summary>
+
+```powershell
+$env:SIGHTGLASS_ANALYZER_TAG = 'latest'
+./make.ps1 images
+docker compose up -d
+```
+</details>
+
+Put it in `.env` to make it stick for `docker compose`, the same way the run
+root is set.
+
+For a single analyzer — pinning a digest, or pulling one image from a different
+registry — `SIGHTGLASS_STATIC_IMAGE`, `SIGHTGLASS_UNPACK_IMAGE`, and
+`SIGHTGLASS_HELLO_IMAGE` take a complete reference and win over the tag:
+
+```bash
+export SIGHTGLASS_STATIC_IMAGE=registry.internal/sightglass/static@sha256:...
+```
 
 ---
 

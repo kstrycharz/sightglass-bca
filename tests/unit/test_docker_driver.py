@@ -15,6 +15,7 @@ import pytest
 
 from core.sandbox.base import SandboxStatus
 from core.sandbox.docker_driver import DockerDriver, _is_timeout, _parse_docker_time
+from core.sandbox.images import analyzer_image
 from core.sandbox.spec import INPUT_DIR, OUTPUT_DIR, BindMount, MountMode, NetworkMode, SandboxSpec
 
 
@@ -44,7 +45,7 @@ def driver(run_root: Path, repo_root: Path) -> DockerDriver:
 
 def make_spec(run_root: Path, **overrides: Any) -> SandboxSpec:
     base: dict[str, Any] = {
-        "image": "sightglass/hello:dev",
+        "image": analyzer_image("hello"),
         "run_id": "run-1",
         "analyzer": "hello",
         "mounts": (

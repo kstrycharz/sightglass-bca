@@ -55,21 +55,28 @@ shell: ## Open a shell in the API container
 	$(COMPOSE_DEV) exec api /bin/bash
 
 # --- analyzer images --------------------------------------------------------
+#
+# The tag these are built with, and the tag the orchestrator runs, come from the
+# same variable, so `make images` and a scan cannot disagree about which image
+# they mean. `?=` keeps the environment authoritative: SIGHTGLASS_ANALYZER_TAG
+# set in the shell (or in .env, exported) wins, and an unset variable builds
+# `:dev` exactly as before.
+SIGHTGLASS_ANALYZER_TAG ?= dev
 
 .PHONY: images
 images: image-hello image-static image-unpack ## Build every analyzer image
 
 .PHONY: image-hello
 image-hello: ## Build the reference analyzer / isolation probe image
-	docker build -t sightglass/hello:dev sandbox/images/hello
+	docker build -t sightglass/hello:$(SIGHTGLASS_ANALYZER_TAG) sandbox/images/hello
 
 .PHONY: image-static
 image-static: ## Build the static scan analyzer (strings, rules, entropy)
-	docker build -f sandbox/images/static/Dockerfile -t sightglass/static:dev .
+	docker build -f sandbox/images/static/Dockerfile -t sightglass/static:$(SIGHTGLASS_ANALYZER_TAG) .
 
 .PHONY: image-unpack
 image-unpack: ## Build the recursive unpack analyzer
-	docker build -f sandbox/images/unpack/Dockerfile -t sightglass/unpack:dev .
+	docker build -f sandbox/images/unpack/Dockerfile -t sightglass/unpack:$(SIGHTGLASS_ANALYZER_TAG) .
 
 .PHONY: refresh-digests
 refresh-digests: ## Print current digests for the pinned base images

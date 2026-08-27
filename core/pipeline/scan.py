@@ -41,13 +41,12 @@ from core.sandbox import (
     SandboxStatus,
     driver_from_settings,
 )
+from core.sandbox.images import analyzer_image
 from core.sandbox.spec import INPUT_DIR, OUTPUT_DIR
 from core.storage import get_object_store
 
 log = structlog.get_logger(__name__)
 
-STATIC_IMAGE = os.environ.get("SIGHTGLASS_STATIC_IMAGE", "sightglass/static:dev")
-UNPACK_IMAGE = os.environ.get("SIGHTGLASS_UNPACK_IMAGE", "sightglass/unpack:dev")
 RULES_MOUNT = PurePosixPath("/rules")
 
 UNPACK_TIMEOUT_S = 900
@@ -311,7 +310,7 @@ def _run_unpack(
     try:
         result = driver.run(
             SandboxSpec(
-                image=UNPACK_IMAGE,
+                image=analyzer_image("unpack"),
                 run_id=run.id,
                 analyzer="unpack",
                 timeout_s=UNPACK_TIMEOUT_S,
@@ -371,7 +370,7 @@ def _run_static(
     try:
         result = driver.run(
             SandboxSpec(
-                image=STATIC_IMAGE,
+                image=analyzer_image("static"),
                 run_id=run.id,
                 analyzer="static",
                 command=tuple(command),

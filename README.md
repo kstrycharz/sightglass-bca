@@ -174,6 +174,11 @@ make check              # lint, type-check, unit tests — no Docker needed
 make test-integration   # sandbox isolation tests — needs Docker
 ```
 
+Analyzer images build and run as `:dev` by default. For a deployment, set
+`SIGHTGLASS_ANALYZER_TAG` to a version or a git sha — both `make images` and
+the orchestrator read it, so a build and a scan cannot disagree about which
+image they mean.
+
 On Windows, substitute `./make.ps1 <target>` for `make <target>`; the targets
 are identical.
 

@@ -27,6 +27,7 @@ from core.orchestrator.scan_tasks import (
     triage_run_task,
 )
 from core.sandbox import Reaper, SandboxSpec, driver_from_settings
+from core.sandbox.images import analyzer_image
 
 log = structlog.get_logger(__name__)
 
@@ -146,7 +147,7 @@ def sandbox_smoke_test(run_id: str, staging_dir: str, results_dir: str) -> dict[
     driver = _driver()
     try:
         spec = SandboxSpec(
-            image="sightglass/hello:dev",
+            image=analyzer_image("hello"),
             run_id=run_id,
             analyzer="hello",
             command=("--probe",),

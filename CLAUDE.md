@@ -80,8 +80,8 @@ make install && make sandbox-check     # ./make.ps1 on Windows
 
 - `SandboxSpec` / `SandboxDriver` / `DockerDriver` / watchdog / reaper are
   implemented, typed, and tested.
-- The `sightglass/hello:dev` analyzer image builds and runs through the real
-  driver inside a locked-down container.
+- The hello analyzer image builds and runs through the real driver inside a
+  locked-down container.
 - The isolation boundary is verified **from inside the container**: not root,
   read-only rootfs, read-only input mount, no TCP, no DNS, writable scratch and
   results.
@@ -92,7 +92,7 @@ make install && make sandbox-check     # ./make.ps1 on Windows
 - CI runs lint, mypy strict, unit tests, the isolation suite, a gitleaks scan,
   the web build, and a stack-boots check.
 
-Verified: 573 unit tests, 19 integration tests, `mypy --strict` clean on
+Verified: 586 unit tests, 19 integration tests, `mypy --strict` clean on
 `core/`, `ruff` clean, `next build` clean.
 
 Not yet started: Ghidra and dynamic analysis (M5), MCP servers (M5), and the
@@ -220,6 +220,11 @@ make down / make clean  # stop / stop and delete volumes
 
 Non-obvious things worth knowing:
 
+- **Analyzer image tags come from `SIGHTGLASS_ANALYZER_TAG`** (default `dev`).
+  One variable feeds the Makefile, `make.ps1`, and `core/sandbox/images.py`, so
+  the build and the orchestrator cannot disagree about which image they mean.
+  `SIGHTGLASS_<NAME>_IMAGE` still takes a full reference and wins, which is how
+  a digest gets pinned.
 - **`SIGHTGLASS_RUN_ROOT` must be an absolute host path.** The worker spawns
   analyzer containers as siblings via the Docker socket; the daemon resolves
   their bind mounts on the *host*. Mismatch it and analyzers silently get empty

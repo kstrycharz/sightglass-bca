@@ -42,6 +42,16 @@ function Invoke-Checked {
 function Invoke-Uv { param([string[]]$Arguments) Invoke-Checked 'uv' (@('run') + $Arguments) }
 function Invoke-Docker { param([string[]]$Arguments) Invoke-Checked 'docker' $Arguments }
 
+function Get-AnalyzerTag {
+    # Mirrors the Makefile's `SIGHTGLASS_ANALYZER_TAG ?= dev`, so the two build
+    # entry points cannot drift. An exported-but-empty variable falls back to
+    # the default rather than producing `sightglass/static:`, which the daemon
+    # would reject with an error that says nothing about the cause.
+    $tag = $env:SIGHTGLASS_ANALYZER_TAG
+    if ([string]::IsNullOrWhiteSpace($tag)) { return 'dev' }
+    return $tag.Trim()
+}
+
 function Initialize-RunRoot {
     if (-not (Test-Path $RunRoot)) { New-Item -ItemType Directory -Force -Path $RunRoot | Out-Null }
     # _HOST is the path the Docker daemon resolves; the plain variable is the
@@ -62,9 +72,9 @@ $Targets = [ordered]@{
     'logs'             = { Invoke-Docker ($ComposeDev + @('logs', '-f')) }
 
     'images'           = { & $PSCommandPath 'image-hello'; & $PSCommandPath 'image-static'; & $PSCommandPath 'image-unpack' }
-    'image-hello'      = { Invoke-Docker @('build', '-t', 'sightglass/hello:dev', 'sandbox/images/hello') }
-    'image-static'     = { Invoke-Docker @('build', '-f', 'sandbox/images/static/Dockerfile', '-t', 'sightglass/static:dev', '.') }
-    'image-unpack'     = { Invoke-Docker @('build', '-f', 'sandbox/images/unpack/Dockerfile', '-t', 'sightglass/unpack:dev', '.') }
+    'image-hello'      = { Invoke-Docker @('build', '-t', "sightglass/hello:$(Get-AnalyzerTag)", 'sandbox/images/hello') }
+    'image-static'     = { Invoke-Docker @('build', '-f', 'sandbox/images/static/Dockerfile', '-t', "sightglass/static:$(Get-AnalyzerTag)", '.') }
+    'image-unpack'     = { Invoke-Docker @('build', '-f', 'sandbox/images/unpack/Dockerfile', '-t', "sightglass/unpack:$(Get-AnalyzerTag)", '.') }
     'refresh-digests'  = {
         foreach ($image in @('python:3.12-slim-bookworm')) {
             Invoke-Docker @('pull', '-q', $image)
