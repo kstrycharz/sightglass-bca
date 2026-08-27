@@ -42,6 +42,25 @@ function Invoke-Checked {
 function Invoke-Uv { param([string[]]$Arguments) Invoke-Checked 'uv' (@('run') + $Arguments) }
 function Invoke-Docker { param([string[]]$Arguments) Invoke-Checked 'docker' $Arguments }
 
+function Get-AnalyzerTag {
+    # Mirrors the Makefile's `SIGHTGLASS_ANALYZER_TAG ?= dev`, so the two build
+    # entry points cannot drift. An exported-but-empty variable falls back to
+    # the default rather than producing `sightglass/static:`, which the daemon
+    # would reject with an error that says nothing about the cause.
+    $tag = $env:SIGHTGLASS_ANALYZER_TAG
+    if ([string]::IsNullOrWhiteSpace($tag)) { return 'dev' }
+    return $tag.Trim()
+}
+
+function Build-Analyzer {
+    # Compose owns the build context and dockerfile; this only has to make sure
+    # the tag Compose sees is the one Get-AnalyzerTag resolved, including the
+    # empty-string case that Compose's own `:-` default would not catch.
+    param([string]$Service)
+    $env:SIGHTGLASS_ANALYZER_TAG = Get-AnalyzerTag
+    Invoke-Docker @('compose', 'build', $Service)
+}
+
 function Initialize-RunRoot {
     if (-not (Test-Path $RunRoot)) { New-Item -ItemType Directory -Force -Path $RunRoot | Out-Null }
     # _HOST is the path the Docker daemon resolves; the plain variable is the
@@ -63,10 +82,13 @@ $Targets = [ordered]@{
 
     'images'           = { & $PSCommandPath 'image-hello'; & $PSCommandPath 'image-static'; & $PSCommandPath 'image-unpack' }
     # Delegated to Compose so each analyzer's build context and dockerfile are
-    # defined in docker-compose.yml only. `docker compose up` builds all three.
-    'image-hello'      = { Invoke-Docker @('compose', 'build', 'analyzer-hello') }
-    'image-static'     = { Invoke-Docker @('compose', 'build', 'analyzer-static') }
-    'image-unpack'     = { Invoke-Docker @('compose', 'build', 'analyzer-unpack') }
+    # defined in docker-compose.yml only; `docker compose up` builds all three.
+    # The tag is passed through rather than baked into a -t, so Compose's
+    # ${SIGHTGLASS_ANALYZER_TAG:-dev} resolves to the same value Get-AnalyzerTag
+    # would have produced.
+    'image-hello'      = { Build-Analyzer 'analyzer-hello' }
+    'image-static'     = { Build-Analyzer 'analyzer-static' }
+    'image-unpack'     = { Build-Analyzer 'analyzer-unpack' }
     'refresh-digests'  = {
         foreach ($image in @('python:3.12-slim-bookworm')) {
             Invoke-Docker @('pull', '-q', $image)

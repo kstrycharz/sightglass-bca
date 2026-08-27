@@ -121,10 +121,20 @@ services:
   #
   # `make images` and CI build these same services, so the build context and
   # dockerfile for each analyzer are defined here and nowhere else.
+  #
+  # The tag follows SIGHTGLASS_ANALYZER_TAG, the same variable
+  # core/sandbox/images.py resolves at scan time, so the image this builds and
+  # the image the worker goes looking for cannot disagree.
+  #
+  # `:-` covers unset and empty, which is where analyzer_tag() also lands. It
+  # cannot strip, so a whitespace-only tag exported into a bare
+  # `docker compose up` builds `sightglass/static:   ` while a scan looks for
+  # `:dev`. Going through `make images` normalises it; there is no way to do it
+  # in Compose interpolation.
   analyzer-hello:
     build:
       context: sandbox/images/hello
-    image: sightglass/hello:dev
+    image: sightglass/hello:${SIGHTGLASS_ANALYZER_TAG:-dev}
     # The image's own ENTRYPOINT is the analyzer. Nothing should analyze
     # anything here — this container exists only to make the build happen.
     entrypoint: ["/bin/true"]
@@ -134,7 +144,7 @@ services:
     build:
       context: .
       dockerfile: sandbox/images/static/Dockerfile
-    image: sightglass/static:dev
+    image: sightglass/static:${SIGHTGLASS_ANALYZER_TAG:-dev}
     entrypoint: ["/bin/true"]
     restart: "no"
 
@@ -142,7 +152,7 @@ services:
     build:
       context: .
       dockerfile: sandbox/images/unpack/Dockerfile
-    image: sightglass/unpack:dev
+    image: sightglass/unpack:${SIGHTGLASS_ANALYZER_TAG:-dev}
     entrypoint: ["/bin/true"]
     restart: "no"
 

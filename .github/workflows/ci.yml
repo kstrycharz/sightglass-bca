@@ -53,7 +53,7 @@ jobs:
       - run: uv sync --extra dev
 
       - name: Build analyzer images
-        run: docker compose build analyzer-hello
+        run: make image-hello   # tag follows SIGHTGLASS_ANALYZER_TAG, default dev
 
       # These are the tests that decide whether anything else in this repo can
       # be trusted, so they get their own job and a visible name.

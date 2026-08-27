@@ -33,10 +33,11 @@ for _stream in (sys.stdout, sys.stderr):
         _stream.reconfigure(encoding="utf-8", errors="replace")
 
 from core.sandbox import BindMount, MountMode, SandboxSpec, driver_from_settings  # noqa: E402
+from core.sandbox.images import analyzer_image  # noqa: E402
 from core.sandbox.spec import INPUT_DIR, OUTPUT_DIR  # noqa: E402
 
 RULES_MOUNT = "/rules"
-STATIC_IMAGE = "sightglass/static:dev"
+STATIC_IMAGE = analyzer_image("static")
 
 
 def run_once(

@@ -55,25 +55,43 @@ shell: ## Open a shell in the API container
 	$(COMPOSE_DEV) exec api /bin/bash
 
 # --- analyzer images --------------------------------------------------------
+#
+# The tag these are built with, and the tag the orchestrator runs, come from the
+# same variable, so `make images` and a scan cannot disagree about which image
+# they mean. `?=` keeps the environment authoritative: SIGHTGLASS_ANALYZER_TAG
+# set in the shell (or in .env, exported) wins, and an unset variable builds
+# `:dev` exactly as before.
+SIGHTGLASS_ANALYZER_TAG ?= dev
 
 # `docker compose up` already builds all three; these targets are for building
 # one in isolation. They delegate so the build context and dockerfile for each
 # analyzer live in docker-compose.yml and nowhere else.
+#
+# Normalised to match core.sandbox.images.analyzer_tag(), which strips and falls
+# back to `dev`. Without this an exported-but-empty variable built
+# `sightglass/hello:` — a reference the daemon rejects with an error naming
+# nothing useful — while a scan went looking for `:dev`. Whitespace-only is the
+# same class of broken deployment script and resolves the same way.
+override SIGHTGLASS_ANALYZER_TAG := $(or $(strip $(SIGHTGLASS_ANALYZER_TAG)),dev)
+
+# Passed on the command line rather than exported: make does not export `?=`
+# variables to recipes, and Compose reads this one from the environment.
+BUILD_ANALYZER := SIGHTGLASS_ANALYZER_TAG=$(SIGHTGLASS_ANALYZER_TAG) $(COMPOSE) build
 
 .PHONY: images
 images: image-hello image-static image-unpack ## Build every analyzer image
 
 .PHONY: image-hello
 image-hello: ## Build the reference analyzer / isolation probe image
-	$(COMPOSE) build analyzer-hello
+	$(BUILD_ANALYZER) analyzer-hello
 
 .PHONY: image-static
 image-static: ## Build the static scan analyzer (strings, rules, entropy)
-	$(COMPOSE) build analyzer-static
+	$(BUILD_ANALYZER) analyzer-static
 
 .PHONY: image-unpack
 image-unpack: ## Build the recursive unpack analyzer
-	$(COMPOSE) build analyzer-unpack
+	$(BUILD_ANALYZER) analyzer-unpack
 
 .PHONY: refresh-digests
 refresh-digests: ## Print current digests for the pinned base images

@@ -534,10 +534,19 @@ Each analyzer image gets a Compose service that builds it and exits:
 ```yaml
   analyzer-static:
     build: {context: ., dockerfile: sandbox/images/static/Dockerfile}
-    image: sightglass/static:dev
+    image: sightglass/static:${SIGHTGLASS_ANALYZER_TAG:-dev}
     entrypoint: ["/bin/true"]
     restart: "no"
 ```
+
+The tag is the variable `core/sandbox/images.py` already resolves at scan time,
+so the image Compose builds and the image the worker goes looking for cannot
+disagree — the same property `make images` had, kept while the build definition
+moved. Compose's `:-` covers unset and empty, which is also where
+`analyzer_tag()` lands; it cannot strip, so `make images` normalises
+whitespace-only ahead of the call. A whitespace-only tag exported into a bare
+`docker compose up` is the one case the two still differ on, and there is no
+Compose interpolation that would fix it.
 
 They are not services in any useful sense — the `entrypoint` override exists
 purely to stop the image's real ENTRYPOINT, an analyzer, from running. The
@@ -551,10 +560,15 @@ This is not for ordering, which the build phase already guarantees; it covers
 nothing to spawn.
 
 `make images`, `make image-*`, and the CI sandbox job now delegate to
-`docker compose build <service>`, so each analyzer's build context and
-dockerfile are defined in `docker-compose.yml` and nowhere else. Three copies
-of a build invocation was how the `unpack` image came to be missing from
+`docker compose build <service>`, so each analyzer's build context, dockerfile
+and tag are defined in `docker-compose.yml` and nowhere else. Three copies of a
+build invocation was how the `unpack` image came to be missing from
 `docs/SETUP.md`'s list in the first place.
+
+Delegating also fixed a live mismatch: `make images` with an exported-but-empty
+`SIGHTGLASS_ANALYZER_TAG` built `sightglass/hello:`, which the daemon rejects
+with an error naming nothing useful, while a scan went looking for `:dev`. The
+Makefile now normalises the variable the way `analyzer_tag()` does.
 
 ### Consequences
 

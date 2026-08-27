@@ -85,7 +85,10 @@ def sandbox_health() -> None:
 
 @sandbox_app.command("hello")
 def sandbox_hello(
-    image: Annotated[str, typer.Option(help="Analyzer image to run.")] = "sightglass/hello:dev",
+    image: Annotated[
+        str | None,
+        typer.Option(help="Analyzer image to run. Defaults to the configured tag."),
+    ] = None,
     keep: Annotated[bool, typer.Option(help="Keep the temporary run directory.")] = False,
 ) -> None:
     """Run the reference analyzer end-to-end through the real driver.
@@ -99,6 +102,7 @@ def sandbox_hello(
     configure_logging(level=settings.log_level, json_output=False)
 
     from core.sandbox import BindMount, MountMode, SandboxSpec, driver_from_settings
+    from core.sandbox.images import analyzer_image
     from core.sandbox.spec import INPUT_DIR, OUTPUT_DIR
 
     settings.run_root.mkdir(parents=True, exist_ok=True)
@@ -116,7 +120,7 @@ def sandbox_hello(
     driver = driver_from_settings()
     try:
         spec = SandboxSpec(
-            image=image,
+            image=image or analyzer_image("hello"),
             run_id=run_dir.name,
             analyzer="hello",
             command=("--probe",),

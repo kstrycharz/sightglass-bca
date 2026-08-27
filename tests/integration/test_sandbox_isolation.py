@@ -5,7 +5,8 @@ through the real driver and assert on what the container observed *from the
 inside*, because the daemon's own description of a container's configuration
 is not evidence that the configuration took effect.
 
-Requires Docker and the ``sightglass/hello:dev`` image (``make images``).
+Requires Docker and the hello analyzer image (``make images``); the tag
+follows ``SIGHTGLASS_ANALYZER_TAG``.
 Skipped otherwise so the unit suite stays runnable anywhere.
 """
 
@@ -18,11 +19,12 @@ from typing import Any
 import pytest
 
 from core.sandbox import BindMount, DockerDriver, MountMode, SandboxSpec, SandboxStatus
+from core.sandbox.images import analyzer_image
 from core.sandbox.spec import INPUT_DIR, OUTPUT_DIR
 
 pytestmark = [pytest.mark.integration, pytest.mark.sandbox]
 
-HELLO_IMAGE = "sightglass/hello:dev"
+HELLO_IMAGE = analyzer_image("hello")
 
 
 @pytest.fixture(scope="module")

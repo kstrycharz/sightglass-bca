@@ -10,6 +10,7 @@ from pathlib import PurePosixPath
 
 import pytest
 
+from core.sandbox.images import analyzer_image
 from core.sandbox.spec import (
     INPUT_DIR,
     OUTPUT_DIR,
@@ -24,7 +25,7 @@ from core.sandbox.spec import (
 
 def make_spec(**overrides: object) -> SandboxSpec:
     base = {
-        "image": "sightglass/hello:dev",
+        "image": analyzer_image("hello"),
         "run_id": "run-1",
         "analyzer": "hello",
     }
