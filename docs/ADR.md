@@ -535,9 +535,20 @@ Each analyzer image gets a Compose service that builds it and exits:
   analyzer-static:
     build: {context: ., dockerfile: sandbox/images/static/Dockerfile}
     image: sightglass/static:${SIGHTGLASS_ANALYZER_TAG:-dev}
+    pull_policy: build
     entrypoint: ["/bin/true"]
     restart: "no"
 ```
+
+`pull_policy: build` is load-bearing and was missed on the first attempt, which
+reproduced the original bug one layer up. Naming the image is what makes the
+tag shared with the orchestrator, but `sightglass/static` also parses as a
+Docker Hub reference, and Compose's default policy is to pull an image it does
+not find locally. On a fresh machine that is a Docker Hub lookup for a
+repository that does not exist: `pull access denied for sightglass/static`,
+and the build that was supposed to happen never runs. The backend and web
+services never hit this because they declare no `image:` at all and get
+project-scoped names nothing could resolve.
 
 The tag is the variable `core/sandbox/images.py` already resolves at scan time,
 so the image Compose builds and the image the worker goes looking for cannot

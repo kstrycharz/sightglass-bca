@@ -131,10 +131,19 @@ services:
   # `docker compose up` builds `sightglass/static:   ` while a scan looks for
   # `:dev`. Going through `make images` normalises it; there is no way to do it
   # in Compose interpolation.
+  #
+  # `pull_policy: build` is not optional. `sightglass/static` parses as a Docker
+  # Hub reference (namespace/repo), and Compose's default policy is to pull an
+  # image it does not find locally — which on a fresh machine means Docker Hub,
+  # no such repository, and "pull access denied for sightglass/static". These
+  # images exist only where they are built, so Compose must never look for them
+  # anywhere else. The backend and web services avoid this by having no `image:`
+  # at all, which leaves them with unresolvable project-scoped names.
   analyzer-hello:
     build:
       context: sandbox/images/hello
     image: sightglass/hello:${SIGHTGLASS_ANALYZER_TAG:-dev}
+    pull_policy: build
     # The image's own ENTRYPOINT is the analyzer. Nothing should analyze
     # anything here — this container exists only to make the build happen.
     entrypoint: ["/bin/true"]
@@ -145,6 +154,7 @@ services:
       context: .
       dockerfile: sandbox/images/static/Dockerfile
     image: sightglass/static:${SIGHTGLASS_ANALYZER_TAG:-dev}
+    pull_policy: build
     entrypoint: ["/bin/true"]
     restart: "no"
 
@@ -153,6 +163,7 @@ services:
       context: .
       dockerfile: sandbox/images/unpack/Dockerfile
     image: sightglass/unpack:${SIGHTGLASS_ANALYZER_TAG:-dev}
+    pull_policy: build
     entrypoint: ["/bin/true"]
     restart: "no"
 

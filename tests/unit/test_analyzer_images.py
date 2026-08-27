@@ -13,6 +13,24 @@ import pytest
 from core.sandbox.images import ANALYZERS, DEFAULT_TAG, analyzer_image, analyzer_tag
 
 
+def _compose_service(name: str) -> str:
+    """The body of one service block in docker-compose.yml.
+
+    Splitting on two-space indentation does not work — the body lines are
+    indented four — so read to the next line that starts a sibling key.
+    """
+    from pathlib import Path
+
+    compose = Path("docker-compose.yml").read_text(encoding="utf-8").splitlines()
+    start = compose.index(f"  {name}:") + 1
+    body: list[str] = []
+    for line in compose[start:]:
+        if line.strip() and not line.startswith("    "):
+            break
+        body.append(line)
+    return "\n".join(body)
+
+
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Start from no configuration, whatever the developer's shell exports."""
@@ -127,6 +145,18 @@ class TestTheBuildAndTheRunAgree:
         worker = compose.split("  worker:", 1)[1].split("\n  worker-heavy:", 1)[0]
         for name in ANALYZERS:
             assert f"analyzer-{name}:" in worker, f"worker does not depend on analyzer-{name}"
+
+    def test_compose_never_tries_to_pull_an_analyzer(self) -> None:
+        """`sightglass/static` parses as a Docker Hub reference, and Compose's
+        default policy pulls an image it cannot find locally. On a fresh machine
+        that means Docker Hub, no such repository, and "pull access denied for
+        sightglass/static" — the build that was meant to happen never runs."""
+        for name in ANALYZERS:
+            service = _compose_service(f"analyzer-{name}")
+            assert "pull_policy: build" in service, (
+                f"analyzer-{name} has no `pull_policy: build`; Compose will try to "
+                f"pull sightglass/{name} from a registry that does not have it"
+            )
 
     def test_the_makefile_delegates_to_those_services(self) -> None:
         from pathlib import Path
